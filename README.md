@@ -48,6 +48,8 @@ docker run -d \
   superneed/ai-radio:latest
 ```
 
+容器启动时会自动创建并修正 `/data`、`/data/audio`、`/data/sound-effects` 的权限，因此可以直接使用宿主机目录挂载。
+
 访问：
 
 ```text
@@ -143,7 +145,7 @@ docker login
 docker buildx build \
   --platform linux/amd64,linux/arm64 \
   -t superneed/ai-radio:latest \
-  -t superneed/ai-radio:0.1.0 \
+  -t superneed/ai-radio:0.1.1 \
   --push .
 ```
 
