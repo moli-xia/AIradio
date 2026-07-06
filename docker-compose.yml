@@ -1,0 +1,20 @@
+services:
+  ai-radio:
+    image: superneed/ai-radio:latest
+    container_name: ai-radio
+    restart: unless-stopped
+    ports:
+      - "4177:4177"
+    environment:
+      NODE_ENV: production
+      TZ: Asia/Shanghai
+      AIRADIO_API_HOST: 0.0.0.0
+      AIRADIO_API_PORT: 4177
+      AIRADIO_STORAGE_DIR: /data
+      AIRADIO_ADMIN_USER: ${AIRADIO_ADMIN_USER:-admin}
+      AIRADIO_ADMIN_PASSWORD: ${AIRADIO_ADMIN_PASSWORD:?set AIRADIO_ADMIN_PASSWORD in .env}
+    volumes:
+      - ai-radio-data:/data
+
+volumes:
+  ai-radio-data:

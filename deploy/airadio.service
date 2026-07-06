@@ -1,0 +1,21 @@
+[Unit]
+Description=Airadio Node service
+After=network.target
+
+[Service]
+Type=simple
+User=www
+Group=www
+WorkingDirectory=/www/wwwroot/airadio
+Environment=NODE_ENV=production
+Environment=TZ=Asia/Shanghai
+Environment=AIRADIO_API_HOST=127.0.0.1
+Environment=AIRADIO_API_PORT=4177
+EnvironmentFile=-/www/wwwroot/airadio/.env
+Environment=PATH=/www/server/nvm/versions/node/v24.18.0/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/www/server/nvm/versions/node/v24.18.0/bin/npm run start
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
