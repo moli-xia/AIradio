@@ -25,9 +25,10 @@ ENV NODE_ENV=production \
 WORKDIR /app
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates curl ffmpeg gosu python3 \
+  && apt-get install -y --no-install-recommends ca-certificates curl ffmpeg gosu python3 python3-pip \
   && curl -L --fail --retry 3 https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
   && chmod 0755 /usr/local/bin/yt-dlp \
+  && pip3 install --no-cache-dir --break-system-packages curl_cffi \
   && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /app/package*.json ./
