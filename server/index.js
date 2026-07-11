@@ -1196,7 +1196,7 @@ async function resolveMediaPageWithYtDlp(pageUrl, siteCookie = "") {
       const detail = String(firstError?.stderr ?? firstError?.message ?? "");
       const isYouTubeBotCheck = !cookieFile
         && /youtube/iu.test(pageUrl)
-        && /Sign in to confirm|not a bot|Use --cookies/iu.test(detail);
+        && /Sign in to confirm|not a bot|Use --cookies|Requested format is not available/iu.test(detail);
       if (!isYouTubeBotCheck) {
         throw firstError;
       }
@@ -1256,8 +1256,8 @@ async function probeRemoteMedia(input, options = {}) {
         throw new Error("服务器尚未安装 yt-dlp 或 FFmpeg，无法解析媒体页面");
       }
       const resolverDetail = String(resolverError?.stderr ?? resolverError?.message ?? resolverError).trim();
-      if (/Sign in to confirm|not a bot/iu.test(resolverDetail)) {
-        throw new Error("YouTube 触发了人机验证。请在节目制作的“站点 Cookie”中填写 YouTube 登录 Cookie 后重试，或稍后再试。");
+      if (/\[youtube\]/iu.test(resolverDetail) && /Sign in to confirm|not a bot|Requested format is not available/iu.test(resolverDetail)) {
+        throw new Error("YouTube 触发了人机验证，返回的可用格式受限。请在节目制作的“站点 Cookie”中填写 YouTube 登录 Cookie 后重试，或稍后再试。");
       }
       const directDetail = String(directError?.stderr ?? directError?.message ?? directError).trim().split("\n").slice(-1)[0];
       const shortDetail = resolverDetail.split("\n").slice(-2).join(" ");
