@@ -9090,6 +9090,20 @@ function AdminStudioPage({
                   />
                   <small>只在本次页面解析和下载中使用，不写入节目、归档或后台配置。Cookie 等同账号凭据，请谨慎使用。</small>
                 </label>
+                <details className="music-cookie-help">
+                  <summary>如何获取 YouTube Cookie</summary>
+                  <div>
+                    <ol>
+                      <li>在电脑浏览器打开 <a href="https://www.youtube.com/" rel="noreferrer" target="_blank">YouTube</a> 并登录你的账号。</li>
+                      <li>按 F12 打开开发者工具，切换到"网络 / Network"标签，然后刷新页面。</li>
+                      <li>在请求列表里找到任意一个发往 <code>youtube.com</code> 的请求（例如 <code>watch?v=...</code>），点击它。</li>
+                      <li>在右侧"标头 / Headers" → "请求标头 / Request Headers"中找到 <code>Cookie</code> 这一行。</li>
+                      <li>复制 <code>Cookie:</code> 后面的完整值（一长串 <code>名称=值; 名称=值; ...</code>），粘贴到上方输入框。</li>
+                      <li>完成后点"检测链接"验证。如果仍提示格式受限，说明 Cookie 已过期或不完整，重新获取即可。</li>
+                    </ol>
+                    <small>Cookie 必须包含 <code>SID</code>、<code>HSID</code>、<code>SSID</code>、<code>APISID</code>、<code>SAPISID</code> 等登录凭证才能通过 YouTube 人机验证。不要复制"响应标头 / Response Headers"里的 <code>Set-Cookie</code>。Cookie 会过期，通常数天到数周后需重新获取。</small>
+                  </div>
+                </details>
                 {mediaProbe ? (
                   <div className="media-probe-result">
                     <ShieldCheck size={18} />

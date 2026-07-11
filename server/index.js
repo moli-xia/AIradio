@@ -1194,8 +1194,7 @@ async function resolveMediaPageWithYtDlp(pageUrl, siteCookie = "") {
       ({ stdout } = await runYtDlp());
     } catch (firstError) {
       const detail = String(firstError?.stderr ?? firstError?.message ?? "");
-      const isYouTubeBotCheck = !cookieFile
-        && /youtube/iu.test(pageUrl)
+      const isYouTubeBotCheck = /youtube/iu.test(pageUrl)
         && /Sign in to confirm|not a bot|Use --cookies|Requested format is not available/iu.test(detail);
       if (!isYouTubeBotCheck) {
         throw firstError;
