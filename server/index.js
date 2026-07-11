@@ -1188,7 +1188,21 @@ async function resolveMediaPageWithYtDlp(pageUrl, siteCookie = "") {
       ...(cookieFile ? ["--cookies", cookieFile] : []),
       pageUrl,
     ];
-    const { stdout } = await execFileAsync("yt-dlp", args, { maxBuffer: 16 * 1024 * 1024, timeout: 90_000 });
+    const runYtDlp = () => execFileAsync("yt-dlp", args, { maxBuffer: 16 * 1024 * 1024, timeout: 90_000 });
+    let stdout;
+    try {
+      ({ stdout } = await runYtDlp());
+    } catch (firstError) {
+      const detail = String(firstError?.stderr ?? firstError?.message ?? "");
+      const isYouTubeBotCheck = !cookieFile
+        && /youtube/iu.test(pageUrl)
+        && /Sign in to confirm|not a bot|Use --cookies/iu.test(detail);
+      if (!isYouTubeBotCheck) {
+        throw firstError;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 2500));
+      ({ stdout } = await runYtDlp());
+    }
     const data = JSON.parse(String(stdout ?? "").trim());
     const selected = Array.isArray(data.requested_formats)
       ? data.requested_formats.find((format) => format?.acodec && format.acodec !== "none")
@@ -1241,9 +1255,13 @@ async function probeRemoteMedia(input, options = {}) {
       if (resolverError?.code === "ENOENT") {
         throw new Error("服务器尚未安装 yt-dlp 或 FFmpeg，无法解析媒体页面");
       }
+      const resolverDetail = String(resolverError?.stderr ?? resolverError?.message ?? resolverError).trim();
+      if (/Sign in to confirm|not a bot/iu.test(resolverDetail)) {
+        throw new Error("YouTube 触发了人机验证。请在节目制作的“站点 Cookie”中填写 YouTube 登录 Cookie 后重试，或稍后再试。");
+      }
       const directDetail = String(directError?.stderr ?? directError?.message ?? directError).trim().split("\n").slice(-1)[0];
-      const resolverDetail = String(resolverError?.stderr ?? resolverError?.message ?? resolverError).trim().split("\n").slice(-2).join(" ");
-      throw new Error(`页面解析失败：${resolverDetail || directDetail || "没有找到可播放音轨"}`);
+      const shortDetail = resolverDetail.split("\n").slice(-2).join(" ");
+      throw new Error(`页面解析失败：${shortDetail || directDetail || "没有找到可播放音轨"}`);
     }
   }
 }
