@@ -10,7 +10,8 @@ COPY package*.json ./
 RUN npm ci
 
 COPY . .
-RUN npm run build \
+RUN npm run install:music-apis \
+  && npm run build \
   && npm prune --omit=dev
 
 FROM node:24-bookworm-slim AS runtime
@@ -24,7 +25,9 @@ ENV NODE_ENV=production \
 WORKDIR /app
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends gosu \
+  && apt-get install -y --no-install-recommends ca-certificates curl ffmpeg gosu python3 \
+  && curl -L --fail --retry 3 https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
+  && chmod 0755 /usr/local/bin/yt-dlp \
   && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /app/package*.json ./
@@ -32,6 +35,8 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/server ./server
 COPY --from=build /app/KuGouMusicApi ./KuGouMusicApi
+COPY --from=build /app/NeteaseCloudMusicApi ./NeteaseCloudMusicApi
+COPY --from=build /app/QQMusicApi ./QQMusicApi
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 RUN mkdir -p /data/audio /data/sound-effects \

@@ -8,9 +8,11 @@ import {
   BrainCircuit,
   CalendarDays,
   ChevronRight,
+  CircleHelp,
   Database,
   Disc3,
   FileAudio,
+  Flame,
   Globe2,
   HardDrive,
   Headphones,
@@ -22,9 +24,11 @@ import {
   LogIn,
   LogOut,
   Mic2,
+  Music2,
   Moon,
   Newspaper,
   Pause,
+  PenLine,
   Play,
   Plus,
   Puzzle,
@@ -73,19 +77,20 @@ type TtsConfig = {
   model: string;
   provider: string;
   speed: number;
+  defaultStylePrompt: string;
+  stylePresets: string[];
   voiceId: string;
 };
 
 type SunoConfig = {
-  apiKey: string;
   baseUrl: string;
-  callbackUrl: string;
+  captchaKey: string;
+  cookie: string;
   defaultPrompt: string;
   enabled: boolean;
-  generatePath: string;
   instrumental: boolean;
-  maxQueue: number;
   model: string;
+  negativeTags: string;
   style: string;
 };
 
@@ -97,6 +102,8 @@ type AudioMixConfig = {
   startMode: "voice-first" | "effect-first";
   volume: number;
 };
+
+type MusicProvider = "auto" | "kugou" | "netease" | "qq";
 
 type PluginsConfig = {
   dailyBriefing: {
@@ -124,17 +131,27 @@ type PluginsConfig = {
     audioMix: AudioMixConfig;
   };
   kugouMusic: {
+    apiEnabled: boolean;
     cardId: number;
     cookie: string;
     enabled: boolean;
     hostId: string;
     maxSongs: number;
     name: string;
+    provider: MusicProvider;
     quality: string;
     rankType: number;
     searchKeywords: string;
     source: string;
     useAiScript: boolean;
+  };
+  neteaseMusic: {
+    cookie: string;
+    enabled: boolean;
+  };
+  qqMusic: {
+    cookie: string;
+    enabled: boolean;
   };
 };
 
@@ -171,10 +188,21 @@ type ProgramRecord = {
   categoryName?: string | null;
   createdAt: string;
   errorMessage?: string | null;
+  fillerTimeline?: Array<{
+    effectiveFillerElapsed: number;
+    previousSongCount: number;
+    publishDate: string;
+    songCount: number;
+  }>;
   host: string;
   id: string;
   llmModel?: string | null;
+  musicPlaylistId?: string | null;
+  playbackMode?: MusicPlaybackMode;
+  playbackResetAt?: string | null;
   playbackSpeed?: number | null;
+  programPresetId?: string | null;
+  restartFromBeginning?: boolean;
   prompt: string;
   pluginId?: string | null;
   playlist?: ProgramPlaylistItem[];
@@ -218,8 +246,11 @@ type ProgramPlaylistItem = {
   leadSeconds?: number;
   loopMode?: "single" | "sequence";
   lyrics?: string;
+  mediaId?: string;
+  originalUrl?: string;
   role?: "background" | "transition" | string;
   source?: string;
+  sourceId?: string;
   startMode?: "voice-first" | "effect-first";
   text?: string;
   title: string;
@@ -236,7 +267,21 @@ type MusicCandidate = {
   duration?: number;
   hash?: string;
   lyrics?: string;
+  mediaId?: string;
+  source?: MusicProvider;
+  sourceId?: string;
   title: string;
+};
+
+type MusicPlaybackMode = "sequential" | "shuffle";
+
+type SavedMusicPlaylist = {
+  createdAt: string;
+  id: string;
+  name: string;
+  playbackMode: MusicPlaybackMode;
+  songs: MusicCandidate[];
+  updatedAt: string;
 };
 
 type ProgramCategory = {
@@ -290,10 +335,58 @@ type SubtitleLine = {
   time: string;
 };
 
-type ProgramType = "custom" | "daily-briefing" | "hot-topics" | "kugou";
+type ProgramType = "custom" | "daily-briefing" | "hot-topics" | "kugou" | "media" | "suno";
+type CustomContentMode = "ai" | "direct";
+type MediaIntroMode = "ai" | "direct" | "none";
+type MediaProgramInput = {
+  creator: string;
+  durationMinutes: number;
+  introMode: MediaIntroMode;
+  introPrompt: string;
+  introText: string;
+  localCopy: boolean;
+  mediaUrl: string;
+  siteCookie: string;
+  title: string;
+};
+type MediaProbeResult = {
+  codec: string;
+  creator: string;
+  duration: number;
+  format: string;
+  mediaUrl: string;
+  originalUrl: string;
+  resolver: string;
+  title: string;
+};
+type AiMusicMode = "auto" | "manual";
+type AiMusicPlan = {
+  lyrics: string;
+  negativeTags: string;
+  style: string;
+  title: string;
+  voiceGender: "female" | "male" | "random";
+};
+type AiMusicInput = AiMusicPlan & {
+  brief: string;
+  instrumental: boolean;
+  mode: AiMusicMode;
+  quantity: number;
+};
+type SunoCandidate = {
+  audioUrl: string;
+  id: string;
+  imageUrl?: string;
+  selected: boolean;
+  slotIndex: number;
+  status: string;
+  title: string;
+  variantIndex: number;
+};
 
 type ProgramPreset = {
   categoryId?: string | null;
+  contentMode?: CustomContentMode;
   createdAt: string;
   hostId?: string | null;
   hostIds: string[];
@@ -309,7 +402,7 @@ type ProgramPreset = {
   updatedAt: string;
 };
 
-type FlowScheduledKind = "custom" | "daily-briefing" | "hot-topics" | "kugou" | "existing" | "preset";
+type FlowScheduledKind = "custom" | "daily-briefing" | "hot-topics" | "kugou" | "media" | "suno" | "existing" | "preset";
 type FlowFillerKind = "kugou-random" | "custom-audio" | "silence";
 
 type FlowTransitionNode = {
@@ -364,6 +457,10 @@ type FlowNodePatch = Partial<{
 type FlowPreset = {
   autoFillEnabled: boolean;
   autoFillKeywords?: string | null;
+  autoFillProvider?: MusicProvider;
+  autoFillRestartFromBeginning?: boolean;
+  autoFillPlaybackMode?: MusicPlaybackMode;
+  autoFillPlaylistId?: string | null;
   autoFillSongs?: MusicCandidate[];
   id: string;
   name: string;
@@ -402,6 +499,8 @@ type FlowPreset = {
 };
 
 type FlowPresetsResponse = { presets: FlowPreset[] };
+type MusicPlaylistsResponse = { playlists: SavedMusicPlaylist[] };
+type MusicPlaylistResponse = { playlist: SavedMusicPlaylist; message: string };
 type FlowPresetResponse = { preset: FlowPreset; message: string };
 type ProgramPresetsResponse = { presets: ProgramPreset[] };
 type ProgramPresetResponse = { preset: ProgramPreset; message: string };
@@ -445,6 +544,12 @@ const defaultSystemPrompt =
   "你是星声电台的多主播节目导演和脚本策划。你了解每位AI主播的人设、声线和说话习惯，但正文台词里不要让主播说出自己的名字，也不要出现“星遥：”“墨白：”这类说话人前缀。";
 const defaultAiHotSongPrompt =
   "生成适合后台音乐连播的歌曲清单，覆盖华语流行、港台金曲、欧美流行、日韩流行、网络热歌和经典高传唱度作品；歌名和歌手要准确，避免重复、纯音乐和白噪音。";
+const defaultVoiceStylePresets = [
+  "自然、清晰、亲切，适合电台直播",
+  "沉稳、专业、节奏清晰的新闻播报",
+  "温柔、治愈、富有陪伴感的深夜电台",
+  "轻快、活力、有感染力的音乐节目",
+];
 const defaultHostVoices: Record<string, string> = {
   xingyao: "茉莉",
   yuxuan: "白桦",
@@ -507,15 +612,6 @@ const ttsEnginePresets = [
     model: "edge-tts",
     provider: "Edge TTS Gateway",
     voiceId: "zh-CN-XiaoxiaoNeural",
-  },
-  {
-    baseUrl: "",
-    engine: "local",
-    format: "wav",
-    label: "本机兜底",
-    model: "linux-system-speech",
-    provider: "Linux 本机语音",
-    voiceId: "",
   },
   {
     baseUrl: "https://your-tts-gateway.example.com/audio/speech",
@@ -619,11 +715,13 @@ type AdminLoginResponse = {
   };
 };
 
-type AdminSection = "archive" | "dashboard" | "effects" | "filler" | "music" | "storage" | "studio" | "timeline" | "settings" | "plugins" | "system";
+type AdminSection = "archive" | "dashboard" | "effects" | "filler" | "flow" | "music" | "storage" | "studio" | "timeline" | "settings" | "plugins" | "system";
 type AdminNotice = {
   message: string;
   tone: "error" | "info" | "success";
 } | null;
+
+const ADMIN_GUIDE_DISMISSED_KEY = "star-radio.admin-guide-dismissed";
 
 const defaultAudioMix: AudioMixConfig = {
   enabled: false,
@@ -655,18 +753,19 @@ const defaultAdminConfig: AdminConfig = {
     model: "tts-1-hd",
     provider: "OpenAI / 网关兼容",
     speed: 1,
+    defaultStylePrompt: defaultVoiceStylePresets[0],
+    stylePresets: defaultVoiceStylePresets,
     voiceId: "alloy",
   },
   suno: {
-    apiKey: "",
-    baseUrl: "https://api.sunoapi.org/api/v1",
-    callbackUrl: "",
+    baseUrl: "http://127.0.0.1:3010",
+    captchaKey: "",
+    cookie: "",
     defaultPrompt: "星夜、湖面、柔和人声、治愈电子氛围",
     enabled: true,
-    generatePath: "/generate",
     instrumental: false,
-    maxQueue: 3,
-    model: "chirp-v4",
+    model: "auto",
+    negativeTags: "harsh noise, distorted vocals, low quality",
     style: "ambient pop, chill, cinematic",
   },
   plugins: {
@@ -695,17 +794,27 @@ const defaultAdminConfig: AdminConfig = {
       audioMix: defaultAudioMix,
     },
     kugouMusic: {
+      apiEnabled: true,
       cardId: 2,
       cookie: "",
       enabled: true,
       hostId: "xiaoya",
       maxSongs: 5,
       name: "音乐联播节目",
+      provider: "auto",
       quality: "128",
       rankType: 21608,
       searchKeywords: "新歌",
       source: "new",
       useAiScript: true,
+    },
+    neteaseMusic: {
+      cookie: "",
+      enabled: true,
+    },
+    qqMusic: {
+      cookie: "",
+      enabled: true,
     },
   },
 };
@@ -782,6 +891,21 @@ function readAdminConfig() {
       ...defaultHostVoices,
       ...(tts.hostVoices ?? {}),
     };
+    if (String(tts.engine).toLowerCase() === "local") {
+      Object.assign(tts, {
+        engine: defaultAdminConfig.tts.engine,
+        provider: defaultAdminConfig.tts.provider,
+        baseUrl: tts.baseUrl || defaultAdminConfig.tts.baseUrl,
+        model: tts.model === "linux-system-speech" ? defaultAdminConfig.tts.model : tts.model,
+        voiceId: tts.voiceId || defaultAdminConfig.tts.voiceId,
+      });
+    }
+    tts.defaultStylePrompt = String(tts.defaultStylePrompt || defaultAdminConfig.tts.defaultStylePrompt).trim();
+    tts.stylePresets = Array.from(new Set(
+      (Array.isArray(tts.stylePresets) ? tts.stylePresets : defaultVoiceStylePresets)
+        .map((item: unknown) => String(item ?? "").trim())
+        .filter(Boolean),
+    ));
     return {
       llm,
       plugins: {
@@ -810,9 +934,29 @@ function readAdminConfig() {
           ...defaultAdminConfig.plugins.kugouMusic,
           ...(parsed.plugins?.kugouMusic ?? {}),
         },
+        neteaseMusic: {
+          ...defaultAdminConfig.plugins.neteaseMusic,
+          ...(parsed.plugins?.neteaseMusic ?? {}),
+        },
+        qqMusic: {
+          ...defaultAdminConfig.plugins.qqMusic,
+          ...(parsed.plugins?.qqMusic ?? {}),
+        },
       },
       tts,
-      suno: { ...defaultAdminConfig.suno, ...(parsed.suno ?? {}) },
+      suno: {
+        ...defaultAdminConfig.suno,
+        ...(parsed.suno ?? {}),
+        baseUrl: /sunoapi\.org/iu.test(String(parsed.suno?.baseUrl ?? ""))
+          ? defaultAdminConfig.suno.baseUrl
+          : String(parsed.suno?.baseUrl ?? defaultAdminConfig.suno.baseUrl),
+        captchaKey: String(parsed.suno?.captchaKey ?? ""),
+        cookie: String(parsed.suno?.cookie ?? ""),
+        model: ["", "chirp-v3-5"].includes(String(parsed.suno?.model ?? "").trim())
+          ? "auto"
+          : String(parsed.suno?.model ?? defaultAdminConfig.suno.model),
+        negativeTags: String(parsed.suno?.negativeTags ?? defaultAdminConfig.suno.negativeTags),
+      },
     };
   } catch {
     return defaultAdminConfig;
@@ -861,7 +1005,6 @@ function ttsApiKeyOptional(config: TtsConfig) {
     marker.includes("local") ||
     marker.includes("本地") ||
     marker.includes("通用") ||
-    config.engine === "local" ||
     /^https?:\/\/(?:127\.0\.0\.1|localhost|\[?::1\]?)(?::\d+)?/iu.test(config.baseUrl.trim())
   );
 }
@@ -889,8 +1032,17 @@ function isAutoFillerProgram(program?: ProgramRecord | null) {
   );
 }
 
+function normalizeMusicProviderClient(value?: string | null): MusicProvider {
+  return value === "netease" || value === "qq" || value === "auto" ? value : "kugou";
+}
+
+function musicProviderLabel(value?: string | null) {
+  const provider = normalizeMusicProviderClient(value);
+  return provider === "netease" ? "网易云" : provider === "qq" ? "QQ 音乐" : provider === "auto" ? "智能混合" : "酷狗";
+}
+
 function songKey(song?: MusicCandidate | ProgramPlaylistItem | null) {
-  return String(song?.hash || song?.albumAudioId || `${song?.artist ?? ""}-${song?.title ?? ""}`).trim();
+  return String(`${song?.source ?? "kugou"}:${song?.sourceId || song?.hash || song?.albumAudioId || `${song?.artist ?? ""}-${song?.title ?? ""}`}`).trim();
 }
 
 function songsFromProgram(program?: ProgramRecord | null): MusicCandidate[] {
@@ -905,11 +1057,15 @@ function songsFromProgram(program?: ProgramRecord | null): MusicCandidate[] {
       duration: item.duration,
       hash: item.hash,
       lyrics: item.lyrics,
+      mediaId: item.mediaId,
+      source: normalizeMusicProviderClient(item.source),
+      sourceId: item.sourceId,
       title: item.title,
     }));
 }
 
 const LIVE_FILLER_CURSOR_KEY = "star-radio.live-filler-cursor";
+const LIVE_FILLER_RESET_STATE_KEY = "star-radio.live-filler-reset-state";
 const AUDIENCE_THEME_KEY = "star-radio.audience-theme";
 type AudienceTheme = "light" | "dark";
 
@@ -924,6 +1080,19 @@ function readLiveFillerCursor() {
 
 function writeLiveFillerCursor(value: Record<string, number>) {
   window.localStorage.setItem(LIVE_FILLER_CURSOR_KEY, JSON.stringify(value));
+}
+
+function readLiveFillerResetState() {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(LIVE_FILLER_RESET_STATE_KEY) ?? "{}");
+    return parsed && typeof parsed === "object" ? parsed as Record<string, string> : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeLiveFillerResetState(value: Record<string, string>) {
+  window.localStorage.setItem(LIVE_FILLER_RESET_STATE_KEY, JSON.stringify(value));
 }
 
 function readAudienceTheme(): AudienceTheme | null {
@@ -1000,8 +1169,9 @@ function timeInputValueFromDate(value?: string | null) {
 const DAY_SECONDS = 24 * 60 * 60;
 const DAY_TIMELINE_MARKS = ["00:00", "06:00", "12:00", "18:00", "24:00"];
 const FILLER_TOP_UP_THRESHOLD = 10;
-const FILLER_TOP_UP_BATCH_SIZE = 50;
-const FILLER_MAX_SONGS = 300;
+const FILLER_TOP_UP_BATCH_SIZE = 30;
+const FILLER_MAX_SONGS = 150;
+const PUBLIC_PROGRAM_LIST_LIMIT = 6;
 const DAY_TIMELINE_TICKS = Array.from({ length: 25 }, (_, index) => index);
 
 function secondsSinceLocalMidnight(value = new Date()) {
@@ -1059,6 +1229,9 @@ function playlistItemDuration(item: ProgramPlaylistItem, fallback = 180) {
   if (item.type === "talk") {
     return Math.max(18, Math.round(String(item.text ?? item.title ?? "").length / 4.2));
   }
+  if (item.type === "transition" || item.role === "transition") {
+    return 8;
+  }
   return Math.max(1, fallback);
 }
 
@@ -1115,6 +1288,17 @@ function programForTrack(trackOrId: Track | string, programs: ProgramRecord[]) {
   }
   const programId = trackId.replace(/^program-/u, "");
   return programs.find((program) => program.id === programId);
+}
+
+function mergeProgramSnapshots(current: ProgramRecord[], incoming: ProgramRecord[]) {
+  const currentById = new Map(current.map((program) => [program.id, program]));
+  const merged = incoming.map((program) => {
+    const existing = currentById.get(program.id);
+    return existing && JSON.stringify(existing) === JSON.stringify(program) ? existing : program;
+  });
+  return merged.length === current.length && merged.every((program, index) => program === current[index])
+    ? current
+    : merged;
 }
 
 function fillerSongEntriesForDate(tracks: Track[], programs: ProgramRecord[], dateKey: string) {
@@ -1186,6 +1370,46 @@ function fillerDurationsForEntries(entries: Array<{ queueIndex: number; track: T
     const item = queue[entry.queueIndex];
     return Math.max(1, Math.round(item ? playlistItemDuration(item, entry.track.duration || 240) : entry.track.duration || 240));
   });
+}
+
+function fillerTimelineForElapsed(
+  entries: Array<{ queueIndex: number; track: Track }>,
+  programs: ProgramRecord[],
+  dateKey: string,
+  elapsedSeconds: number,
+) {
+  if (!entries.length) {
+    return { durations: [] as number[], entries, position: 0 };
+  }
+  const program = programForTrack(entries[0].track, programs);
+  const revisions = (program?.fillerTimeline ?? [])
+    .filter((revision) =>
+      revision.publishDate === dateKey &&
+      Number.isFinite(revision.effectiveFillerElapsed) &&
+      revision.previousSongCount > 0 &&
+      revision.songCount > revision.previousSongCount,
+    )
+    .sort((a, b) => a.effectiveFillerElapsed - b.effectiveFillerElapsed);
+  let activeCount = Math.min(entries.length, Math.max(1, revisions[0]?.previousSongCount ?? entries.length));
+  let activeEntries = entries.slice(0, activeCount);
+  let durations = fillerDurationsForEntries(activeEntries);
+  let totalDuration = Math.max(1, durations.reduce((total, duration) => total + duration, 0));
+  let position = ((elapsedSeconds % totalDuration) + totalDuration) % totalDuration;
+
+  for (const revision of revisions) {
+    if (elapsedSeconds < revision.effectiveFillerElapsed) {
+      break;
+    }
+    activeCount = Math.min(entries.length, Math.max(1, revision.songCount));
+    activeEntries = entries.slice(0, activeCount);
+    durations = fillerDurationsForEntries(activeEntries);
+    totalDuration = Math.max(1, durations.reduce((total, duration) => total + duration, 0));
+    const previousCount = Math.min(activeCount, Math.max(1, revision.previousSongCount));
+    const appendedStart = durations.slice(0, previousCount).reduce((total, duration) => total + duration, 0);
+    position = ((appendedStart + elapsedSeconds - revision.effectiveFillerElapsed) % totalDuration + totalDuration) % totalDuration;
+  }
+
+  return { durations, entries: activeEntries, position };
 }
 
 function fillerEntryIndexByElapsed(entries: Array<{ queueIndex: number; track: Track }>, elapsedSeconds: number) {
@@ -1263,6 +1487,13 @@ function scheduledBlockedSecondsBefore(
     }
   }
   return blockedSeconds;
+}
+
+function fillerElapsedForTime(tracks: Track[], programs: ProgramRecord[], now: Date) {
+  const dateKey = localDateKey(now);
+  const daySecond = secondsSinceLocalMidnight(now);
+  const blocks = scheduledBlocksForDate(tracks, programs, dateKey);
+  return Math.max(0, daySecond - scheduledBlockedSecondsBefore(blocks, daySecond));
 }
 
 function nextFillerCursorAfterScheduledProgram(
@@ -1352,28 +1583,25 @@ function liveStateForTime(
 
   const daySecond = secondsSinceLocalMidnight(now);
   const fillerEntries = fillerSongEntriesForDate(candidateTracks, programs, today);
-  const fillerDurations = fillerEntries.map((entry) => {
-    const queue = playbackQueueForTrack(entry.track);
-    const item = queue[entry.queueIndex];
-    return Math.max(1, Math.round(item ? playlistItemDuration(item, entry.track.duration || 240) : entry.track.duration || 240));
-  });
   const selectFillerByElapsed = (elapsedSeconds: number) => {
     if (!fillerEntries.length) {
       return null;
     }
-    const totalDuration = fillerDurations.reduce((total, duration) => total + duration, 0);
-    const positionInFillers = ((elapsedSeconds % Math.max(1, totalDuration)) + Math.max(1, totalDuration)) % Math.max(1, totalDuration);
+    const timeline = fillerTimelineForElapsed(fillerEntries, programs, today, elapsedSeconds);
+    const activeEntries = timeline.entries;
+    const fillerDurations = timeline.durations;
+    const positionInFillers = timeline.position;
     let cursor = 0;
-    for (let index = 0; index < fillerEntries.length; index += 1) {
+    for (let index = 0; index < activeEntries.length; index += 1) {
       const nextCursor = cursor + fillerDurations[index];
       if (positionInFillers < nextCursor) {
         const selectedIndex =
-          avoidFiller?.trackId === fillerEntries[index].track.id && avoidFiller.queueIndex === fillerEntries[index].queueIndex
-            ? (index + 1) % fillerEntries.length
+          avoidFiller?.trackId === activeEntries[index].track.id && avoidFiller.queueIndex === activeEntries[index].queueIndex
+            ? (index + 1) % activeEntries.length
             : index;
         const selectedCursor = selectedIndex === index ? cursor : 0;
         const seekSeconds = selectedIndex === index ? Math.max(0, positionInFillers - selectedCursor) : 0;
-        const entry = fillerEntries[selectedIndex];
+        const entry = activeEntries[selectedIndex];
         return {
           elapsedSeconds: seekSeconds,
           queueIndex: entry.queueIndex,
@@ -1383,7 +1611,7 @@ function liveStateForTime(
       }
       cursor = nextCursor;
     }
-    const entry = fillerEntries[0];
+    const entry = activeEntries[0];
     return { elapsedSeconds: 0, queueIndex: entry.queueIndex, seekSeconds: 0, track: entry.track };
   };
 
@@ -1572,10 +1800,32 @@ function programsForTimelineDate(programs: ProgramRecord[], date: string) {
     .sort(compareProgramsByAirOrder);
 }
 
+function programFinishTimestamp(program: ProgramRecord) {
+  if (!program.scheduledAt) {
+    return null;
+  }
+  const startedAt = new Date(program.scheduledAt).getTime();
+  if (!Number.isFinite(startedAt)) {
+    return null;
+  }
+  return startedAt + Math.max(1, estimateProgramDuration(program)) * 1000;
+}
+
+function programHasFinished(program: ProgramRecord, now = new Date()) {
+  const finishedAt = programFinishTimestamp(program);
+  return finishedAt !== null && finishedAt <= now.getTime();
+}
+
 function estimateProgramDuration(program: ProgramRecord) {
-  if (program.playlist?.length) {
-    return program.playlist.reduce((total, item) => {
-      const fallback = item.type === "talk" ? Math.max(18, Math.round(String(item.text ?? "").length / 4.2)) : 240;
+  const playableItems = primaryPlaylistItems(program.playlist).filter((item) => item.audioUrl);
+  const contentItems = playableItems.filter((item) => item.type !== "transition" && item.role !== "transition");
+  if (contentItems.length) {
+    return playableItems.reduce((total, item) => {
+      const fallback = item.type === "talk"
+        ? Math.max(18, Math.round(String(item.text ?? "").length / 4.2))
+        : item.type === "transition" || item.role === "transition"
+          ? 8
+          : 240;
       return total + Math.max(1, Number(item.duration ?? fallback));
     }, 0);
   }
@@ -1599,8 +1849,11 @@ function programArtwork(index: number) {
 
 function programToTrack(program: ProgramRecord, index: number): Track {
   const basePlaylist = program.playlist?.length ? primaryPlaylistItems(program.playlist) : undefined;
+  const hasPrimaryContent = basePlaylist?.some(
+    (item) => item.audioUrl && item.type !== "transition" && item.role !== "transition",
+  );
   const fullProgramPlaylist =
-    !basePlaylist?.length && program.audioUrl
+    !hasPrimaryContent && program.audioUrl
       ? ([
           {
             audioPath: program.audioPath ?? null,
@@ -1632,7 +1885,9 @@ function programToTrack(program: ProgramRecord, index: number): Track {
             type: "talk",
           }) satisfies ProgramPlaylistItem)
       : undefined;
-  const playlist = basePlaylist?.length ? basePlaylist : fullProgramPlaylist ?? segmentPlaylist;
+  const playlist = basePlaylist?.length
+    ? [...basePlaylist, ...(fullProgramPlaylist ?? segmentPlaylist ?? [])]
+    : fullProgramPlaylist ?? segmentPlaylist;
   const firstPlaylistAudio = playlist?.find((item) => item.audioUrl)?.audioUrl ?? "";
   return {
     id: `program-${program.id}`,
@@ -1778,7 +2033,43 @@ function programHostIdsForProgram(program: ProgramRecord | null) {
   return hostIds.length ? Array.from(new Set(hostIds)) : [hosts[0].id];
 }
 
-function draftSegmentsForHosts(script: string, hostIds: string[], sourceType?: string | null) {
+function latestProgramForPreset(programs: ProgramRecord[], preset: ProgramPreset) {
+  const newest = (items: ProgramRecord[]) =>
+    [...items].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0] ?? null;
+  const exactMatch = newest(programs.filter((program) => program.programPresetId === preset.id));
+  if (exactMatch) {
+    return exactMatch;
+  }
+
+  // 旧节目尚未保存 programPresetId：按模板类型及核心配置回退匹配，
+  // 让升级前已生成的文案和音频也能在预设编辑页正确显示。
+  const pluginKind = preset.pluginKind || preset.type;
+  if (pluginKind === "daily-briefing") {
+    return newest(programs.filter((program) => program.pluginId === "daily-briefing"));
+  }
+  if (pluginKind === "hot-topics") {
+    return newest(programs.filter((program) => program.pluginId === "hot-topics"));
+  }
+  if (pluginKind === "kugou") {
+    return newest(
+      programs.filter(
+        (program) => program.pluginId === "kugou-music" && program.sourceType !== "flow-filler",
+      ),
+    );
+  }
+
+  const prompt = String(preset.prompt ?? "").trim();
+  const titles = new Set([preset.name, preset.title].map((value) => String(value ?? "").trim()).filter(Boolean));
+  return newest(
+    programs.filter(
+      (program) =>
+        program.sourceType === "flow-preset" &&
+        ((prompt && String(program.prompt ?? "").trim() === prompt) || titles.has(String(program.title ?? "").trim())),
+    ),
+  );
+}
+
+function draftSegmentsForHosts(script: string, hostIds: string[], sourceType?: string | null, voicePrompt = "") {
   const selectedHosts = hosts.filter((host) => hostIds.includes(host.id));
   const safeHosts = selectedHosts.length ? selectedHosts : [hosts[0]];
   const paragraphs = String(script ?? "")
@@ -1792,7 +2083,7 @@ function draftSegmentsForHosts(script: string, hostIds: string[], sourceType?: s
     return {
       hostId: host.id,
       hostName: host.name,
-      style: sourceType === "plugin" ? "新闻播报，清晰自然，有真人播报感" : host.tone,
+      style: voicePrompt.trim() || (sourceType === "plugin" ? "新闻播报，清晰自然，有真人播报感" : host.tone),
       text,
     };
   });
@@ -1823,7 +2114,7 @@ function playlistItemKey(item?: ProgramPlaylistItem) {
   if (!item) {
     return "";
   }
-  return item.hash || `${item.artist ?? ""}-${item.title}`.trim();
+  return `${item.source ?? "kugou"}:${item.sourceId || item.hash || `${item.artist ?? ""}-${item.title}`.trim()}`;
 }
 
 async function apiJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -1975,12 +2266,17 @@ export function App() {
   const [currentQueueIndex, setCurrentQueueIndex] = useState(0);
   const [backgroundEffectIndex, setBackgroundEffectIndex] = useState(0);
   const [programPreviewBackgroundIndex, setProgramPreviewBackgroundIndex] = useState(0);
-  const [pendingAudioSeek, setPendingAudioSeek] = useState<{ audioUrl: string; requestId: number; seconds: number } | null>(null);
+  const [pendingAudioSeek, setPendingAudioSeek] = useState<{
+    audioUrl: string;
+    queueIndex: number;
+    requestId: number;
+    seconds: number;
+    trackId: string;
+  } | null>(null);
   const [mainPlaybackLeadEnabled, setMainPlaybackLeadEnabled] = useState(false);
   const livePlaybackStartedRef = useRef(false);
-  const fillerTopUpInFlightRef = useRef<Set<string>>(new Set());
-  const fillerTopUpAttemptRef = useRef<Set<string>>(new Set());
   const [runtimeLyrics, setRuntimeLyrics] = useState<Record<string, string>>({});
+  const [runtimeAudioUrls, setRuntimeAudioUrls] = useState<Record<string, { resolvedAt: number; url: string }>>({});
   const [favorites, setFavorites] = useState<string[]>(() => readSavedIds("star-radio.favorites"));
   const [reminders, setReminders] = useState<string[]>(() => readSavedIds("star-radio.reminders"));
   const [manualMusicQuery, setManualMusicQuery] = useState("");
@@ -1998,15 +2294,20 @@ export function App() {
   });
   const [backendStatus, setBackendStatus] = useState("正在连接后台数据库");
   const [programPrompt, setProgramPrompt] = useState("今晚的城市下着微雨，请生成一段适合夜间直播的治愈系 AI 电台节目。");
+  const [customContentMode, setCustomContentMode] = useState<CustomContentMode>("ai");
   const [programTitle, setProgramTitle] = useState("星夜漫游 · 今晚的风");
   const [programType, setProgramType] = useState<ProgramType>("custom");
   const [programStatus, setProgramStatus] = useState("等待生成节目文案");
   const [programBusy, setProgramBusy] = useState(false);
   const [programPresetBusy, setProgramPresetBusy] = useState(false);
   const [publishBusy, setPublishBusy] = useState(false);
+  const [programPushBusyId, setProgramPushBusyId] = useState("");
   const [dailyBriefingBusy, setDailyBriefingBusy] = useState(false);
   const [hotTopicsBusy, setHotTopicsBusy] = useState(false);
   const [kugouProgramBusy, setKugouProgramBusy] = useState(false);
+  const [mediaProgramBusy, setMediaProgramBusy] = useState(false);
+  const [sunoMusicBusy, setSunoMusicBusy] = useState(false);
+  const [sunoCandidates, setSunoCandidates] = useState<SunoCandidate[]>([]);
   const [kugouLoginBusy, setKugouLoginBusy] = useState(false);
   const [kugouQr, setKugouQr] = useState<{ key: string; qrImage: string; qrUrl: string } | null>(null);
   const [kugouStatus, setKugouStatus] = useState("酷狗状态未检测");
@@ -2044,6 +2345,9 @@ export function App() {
   const liveEndedTrackRef = useRef<{ dateKey: string; trackId: string } | null>(null);
   const liveInterruptedFillerRef = useRef<LiveInterruptedFillerState | null>(null);
   const liveFillerCursorRef = useRef<Record<string, number>>(readLiveFillerCursor());
+  const liveFillerResetStateRef = useRef<Record<string, string>>(readLiveFillerResetState());
+  const fillerTopUpInFlightRef = useRef<Set<string>>(new Set());
+  const fillerTopUpAttemptRef = useRef<Set<string>>(new Set());
 
   const adminLoggedIn = Boolean(adminToken);
   const currentThemeMode = audienceTheme ?? resolveThemeTemplate(systemSettings, clockNow).mode;
@@ -2066,12 +2370,22 @@ export function App() {
   const backendTracks = useMemo(() => playablePrograms.map(programToTrack), [playablePrograms]);
   const publicTrackCatalog = backendTracks;
   const onDemandTrackCatalog = useMemo(
-    () => publicTrackCatalog.filter((track) => !isAutoFillerProgram(programForTrack(track, playablePrograms))),
-    [playablePrograms, publicTrackCatalog],
+    () => publicTrackCatalog.filter((track) => {
+      const program = programForTrack(track, playablePrograms);
+      return program && !isAutoFillerProgram(program) && programHasFinished(program, clockNow);
+    }),
+    [clockNow, playablePrograms, publicTrackCatalog],
   );
   const libraryTrackCatalog = useMemo(
-    () => onDemandTrackCatalog.filter((track) => track.playlist?.some((item) => item.type === "song" && item.audioUrl)),
-    [onDemandTrackCatalog],
+    () => onDemandTrackCatalog
+      .filter((track) => track.playlist?.some((item) => item.type === "song" && item.audioUrl))
+      .sort((a, b) => {
+        const programA = programForTrack(a, playablePrograms);
+        const programB = programForTrack(b, playablePrograms);
+        return (programB ? programFinishTimestamp(programB) ?? 0 : 0) - (programA ? programFinishTimestamp(programA) ?? 0 : 0);
+      })
+      .slice(0, PUBLIC_PROGRAM_LIST_LIMIT),
+    [onDemandTrackCatalog, playablePrograms],
   );
   const getSequentialFillerState = useCallback(
     (
@@ -2148,13 +2462,19 @@ export function App() {
       return false;
     }
 
-    setMainPlaybackLeadEnabled(false);
+    // 从转场开始播放时，转场结束后仍需执行“背景/人声谁先播”的间隔设置。
+    // 若直接定位到节目中段，则不再补播开场间隔。
+    setMainPlaybackLeadEnabled(
+      targetQueueItem?.type === "transition" || targetQueueItem?.role === "transition",
+    );
     setCurrentTrack(targetTrack);
     setCurrentQueueIndex(targetLiveState.queueIndex);
     setPendingAudioSeek({
       audioUrl: targetAudioUrl,
+      queueIndex: targetLiveState.queueIndex,
       requestId: Date.now(),
       seconds: targetLiveState.seekSeconds,
+      trackId: targetTrack.id,
     });
     setPlaybackTime(targetLiveState.seekSeconds);
     setPlaybackDuration(targetQueueItem?.duration || targetTrack.duration || 1);
@@ -2191,8 +2511,6 @@ export function App() {
         ]
       : undefined;
   const backgroundLeadSeconds = Math.max(0, Number(currentBackgroundItem?.leadSeconds ?? 0) || 0);
-  const mainPlaybackDelayMs =
-    mainPlaybackLeadEnabled && currentBackgroundItem?.startMode === "effect-first" ? backgroundLeadSeconds * 1000 : 0;
   const programPreviewBackgroundItem = useMemo(() => backgroundPlaylistItems(generatedProgram ?? undefined)[0], [generatedProgram]);
   const programPreviewBackgroundEffects = programPreviewBackgroundItem?.items?.filter((item) => item.audioUrl) ?? [];
   const programPreviewBackgroundEffect =
@@ -2206,6 +2524,15 @@ export function App() {
   const programPreviewBackgroundLeadSeconds = Math.max(0, Number(programPreviewBackgroundItem?.leadSeconds ?? 0) || 0);
   const currentTrackQueue = useMemo(() => playbackQueueForTrack(currentTrack), [currentTrack]);
   const currentQueueItem = currentTrackQueue[Math.min(currentQueueIndex, Math.max(0, currentTrackQueue.length - 1))];
+  const isTransitionQueueItem = currentQueueItem?.type === "transition" || currentQueueItem?.role === "transition";
+  const currentMainVolume = Math.min(
+    1,
+    Math.max(0, volume * (isTransitionQueueItem ? Number(currentQueueItem?.volume ?? 1) : 1)),
+  );
+  const mainPlaybackDelayMs =
+    !isTransitionQueueItem && mainPlaybackLeadEnabled && currentBackgroundItem?.startMode === "effect-first"
+      ? backgroundLeadSeconds * 1000
+      : 0;
   const currentQueueItemKey = playlistItemKey(currentQueueItem);
   const currentQueueItemWithLyrics = currentQueueItem
     ? {
@@ -2213,12 +2540,21 @@ export function App() {
         lyrics: currentQueueItem.lyrics || runtimeLyrics[currentQueueItemKey],
       }
     : undefined;
+  const remoteSongResolutionKey = currentProgram && currentQueueItem?.type === "song" && ["kugou", "netease", "qq"].includes(String(currentQueueItem.source ?? ""))
+    ? `${currentProgram.id}:${currentQueueIndex}:${currentQueueItem.source}:${currentQueueItem.sourceId || currentQueueItem.hash || currentQueueItem.mediaId || currentQueueItem.title}`
+    : "";
+  const resolvedAudioEntry = remoteSongResolutionKey ? runtimeAudioUrls[remoteSongResolutionKey] : undefined;
+  const resolvedAudioUrl = resolvedAudioEntry?.url ?? "";
+  const currentAudioUrl = remoteSongResolutionKey
+    ? resolvedAudioUrl
+    : currentQueueItemWithLyrics?.audioUrl || currentTrack.audioUrl;
   const requestFillerTopUpIfNeeded = useCallback(async (
     program: ProgramRecord,
     queue: ProgramPlaylistItem[],
     queueIndex: number,
+    effectiveFillerElapsed: number,
   ) => {
-    if (!program.id || !isAutoFillerProgram(program)) {
+    if (!program.id || !isAutoFillerProgram(program) || program.musicPlaylistId) {
       return;
     }
     const songIndexes = queue
@@ -2227,8 +2563,8 @@ export function App() {
     if (!songIndexes.length || songIndexes.length >= FILLER_MAX_SONGS) {
       return;
     }
-    const currentSongCount = songIndexes.filter((index) => index <= queueIndex).length || 1;
-    const remainingSongs = Math.max(0, songIndexes.length - currentSongCount);
+    const currentSongOffset = songIndexes.findIndex((index) => index === queueIndex);
+    const remainingSongs = currentSongOffset >= 0 ? songIndexes.length - currentSongOffset - 1 : songIndexes.length;
     if (remainingSongs > FILLER_TOP_UP_THRESHOLD) {
       return;
     }
@@ -2237,38 +2573,32 @@ export function App() {
     if (fillerTopUpInFlightRef.current.has(key) || fillerTopUpAttemptRef.current.has(key)) {
       return;
     }
-
     fillerTopUpInFlightRef.current.add(key);
     fillerTopUpAttemptRef.current.add(key);
     try {
-      const result = await apiJson<ProgramListResponse & {
-        addedSongs?: MusicCandidate[];
-        message?: string;
-        program?: ProgramRecord | null;
-        running?: boolean;
-        totalSongs?: number;
-      }>(`/api/programs/${program.id}/filler/top-up`, {
-        body: JSON.stringify({
-          batchSize: FILLER_TOP_UP_BATCH_SIZE,
-          maxSongs: FILLER_MAX_SONGS,
-          remainingSongs,
-        }),
-        headers: { "Content-Type": "application/json" },
-        method: "POST",
-      });
-      setProgramHistory(result.programs);
+      const result = await apiJson<ProgramListResponse & { program?: ProgramRecord | null }>(
+        `/api/programs/${program.id}/filler/top-up`,
+        {
+          body: JSON.stringify({
+            batchSize: FILLER_TOP_UP_BATCH_SIZE,
+            effectiveFillerElapsed,
+            maxSongs: FILLER_MAX_SONGS,
+            remainingSongs,
+          }),
+          headers: { "Content-Type": "application/json" },
+          method: "POST",
+        },
+      );
+      setProgramHistory((current) => mergeProgramSnapshots(current, result.programs));
       if (result.program) {
-        setGeneratedProgram((current) => (current?.id === result.program?.id ? result.program as ProgramRecord : current));
+        setGeneratedProgram((current) => current?.id === result.program?.id ? result.program as ProgramRecord : current);
       }
     } catch {
-      window.setTimeout(() => {
-        fillerTopUpAttemptRef.current.delete(key);
-      }, 60_000);
+      window.setTimeout(() => fillerTopUpAttemptRef.current.delete(key), 60_000);
     } finally {
       fillerTopUpInFlightRef.current.delete(key);
     }
   }, []);
-  const currentAudioUrl = currentQueueItemWithLyrics?.audioUrl || currentTrack.audioUrl;
   const currentDisplayTitle =
     currentQueueItemWithLyrics?.type === "song" ? currentQueueItemWithLyrics.title : cleanAudienceCopy(currentTrack.title);
   const currentDisplayHost =
@@ -2299,7 +2629,13 @@ export function App() {
     const today = localDateKey();
     const seen = new Set<string>();
     return programHistory
-      .filter((program) => program.publishDate === today && program.scheduledAt)
+      .filter((program) => {
+        if (program.publishDate !== today || !program.scheduledAt) {
+          return false;
+        }
+        const finishedAt = programFinishTimestamp(program);
+        return finishedAt !== null && finishedAt > clockNow.getTime();
+      })
       .sort((a, b) => {
         const at = a.scheduledAt ? new Date(a.scheduledAt).getTime() : Number.MAX_SAFE_INTEGER;
         const bt = b.scheduledAt ? new Date(b.scheduledAt).getTime() : Number.MAX_SAFE_INTEGER;
@@ -2314,21 +2650,26 @@ export function App() {
         seen.add(dedupeKey);
         return true;
       })
-      .slice(0, 8)
+      .slice(0, PUBLIC_PROGRAM_LIST_LIMIT)
       .map((program) => ({
         id: program.id,
         time: programTimeLabel(program),
         title: cleanAudienceCopy(program.title),
         host: program.host,
-        style: `${program.categoryName ?? "节目"} · ${program.status === "ready" ? "可播" : "待配音"}`,
+        style: `${program.categoryName ?? "节目"} · ${new Date(program.scheduledAt || 0).getTime() <= clockNow.getTime() ? "正在播出" : program.status === "ready" ? "可播" : "待配音"}`,
       }));
-  }, [programHistory]);
+  }, [clockNow, programHistory]);
   const publicHistoryItems = useMemo(() => {
     const today = localDateKey();
     const seen = new Set<string>();
     return programHistory
-      .filter((program) => program.publishDate === today && isProgramPlayable(program) && !isAutoFillerProgram(program))
-      .sort(compareProgramsByAirOrder)
+      .filter((program) =>
+        program.publishDate === today &&
+        isProgramPlayable(program) &&
+        !isAutoFillerProgram(program) &&
+        programHasFinished(program, clockNow),
+      )
+      .sort((a, b) => (programFinishTimestamp(b) ?? 0) - (programFinishTimestamp(a) ?? 0))
       .filter((program) => {
         if (seen.has(program.id)) {
           return false;
@@ -2336,7 +2677,7 @@ export function App() {
         seen.add(program.id);
         return true;
       })
-      .slice(0, 8)
+      .slice(0, PUBLIC_PROGRAM_LIST_LIMIT)
       .map((program, index) => ({
         id: program.id,
         title: cleanAudienceCopy(program.title),
@@ -2346,18 +2687,12 @@ export function App() {
         color: "#7b61ff",
         image: programArtwork(index),
       }));
-  }, [programHistory]);
+  }, [clockNow, programHistory]);
   const timelinePrograms = useMemo(
     () => programsForTimelineDate(programHistory, selectedTimelineDate),
     [programHistory, selectedTimelineDate],
   );
 
-  const visibleTracks = useMemo(() => {
-    if (activeNav === "个人中心") {
-      return favoriteTracks;
-    }
-    return onDemandTrackCatalog;
-  }, [activeNav, favoriteTracks, onDemandTrackCatalog]);
   const programScheduledAtForRequest = () => scheduledAtFromDateAndTime(selectedTimelineDate, programScheduledTime);
 
   useEffect(() => {
@@ -2478,6 +2813,80 @@ export function App() {
   }, [adminToken, isAdminRoute]);
 
   useEffect(() => {
+    if (isAdminRoute) {
+      return;
+    }
+    let cancelled = false;
+    const refreshPrograms = async () => {
+      try {
+        const data = await apiJson<ProgramListResponse>("/api/programs");
+        if (!cancelled) {
+          setProgramHistory((current) => mergeProgramSnapshots(current, data.programs));
+        }
+      } catch {
+        // 前台轮询失败时保留当前节目，下一轮自动重试。
+      }
+    };
+    const timer = window.setInterval(() => void refreshPrograms(), 10_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [isAdminRoute]);
+
+  useEffect(() => {
+    if (isAdminRoute) {
+      return;
+    }
+    const dateKey = localDateKey(clockNow);
+    const resetProgram = [...playablePrograms]
+      .filter((program) =>
+        program.publishDate === dateKey &&
+        isAutoFillerProgram(program) &&
+        program.playbackMode === "sequential" &&
+        program.restartFromBeginning &&
+        Boolean(program.playbackResetAt),
+      )
+      .sort((a, b) => new Date(b.playbackResetAt || 0).getTime() - new Date(a.playbackResetAt || 0).getTime())[0];
+    const resetToken = resetProgram?.playbackResetAt ?? "";
+    if (!resetProgram || !resetToken || liveFillerResetStateRef.current[resetProgram.id] === resetToken) {
+      return;
+    }
+
+    liveFillerResetStateRef.current[resetProgram.id] = resetToken;
+    writeLiveFillerResetState(liveFillerResetStateRef.current);
+    liveFillerCursorRef.current[dateKey] = 0;
+    writeLiveFillerCursor(liveFillerCursorRef.current);
+    liveInterruptedFillerRef.current = null;
+
+    const currentProgram = programForTrack(currentTrack, playablePrograms);
+    if (!playing || !currentProgram || !isAutoFillerProgram(currentProgram)) {
+      return;
+    }
+    const firstEntry = fillerSongEntriesForDate(publicTrackCatalog, playablePrograms, dateKey)[0];
+    if (!firstEntry) {
+      return;
+    }
+    const queue = playbackQueueForTrack(firstEntry.track);
+    const item = queue[firstEntry.queueIndex];
+    const audioUrl = item?.audioUrl || firstEntry.track.audioUrl;
+    setCurrentTrack(firstEntry.track);
+    setCurrentQueueIndex(firstEntry.queueIndex);
+    setPlaybackTime(0);
+    setLiveProgress(0);
+    setPlaybackDuration(item?.duration || firstEntry.track.duration || 1);
+    if (audioUrl) {
+      setPendingAudioSeek({
+        audioUrl,
+        queueIndex: firstEntry.queueIndex,
+        requestId: Date.now(),
+        seconds: 0,
+        trackId: firstEntry.track.id,
+      });
+    }
+  }, [clockNow, currentTrack, isAdminRoute, playablePrograms, playing, publicTrackCatalog]);
+
+  useEffect(() => {
     document.title = systemSettings.appName || defaultSystemSettings.appName;
   }, [systemSettings.appName]);
 
@@ -2524,12 +2933,38 @@ export function App() {
     if (!playing || !livePlaybackStartedRef.current) {
       return;
     }
-    const currentProgramForTopUp = programForTrack(currentTrack, playablePrograms);
-    if (!currentProgramForTopUp || !isAutoFillerProgram(currentProgramForTopUp)) {
+    const program = programForTrack(currentTrack, playablePrograms);
+    if (!program || !isAutoFillerProgram(program) || program.musicPlaylistId) {
       return;
     }
-    void requestFillerTopUpIfNeeded(currentProgramForTopUp, currentTrackQueue, currentQueueIndex);
-  }, [currentQueueIndex, currentTrack, currentTrackQueue, playablePrograms, playing, requestFillerTopUpIfNeeded]);
+    const songIndexes = currentTrackQueue
+      .map((item, index) => item.type === "song" && item.audioUrl ? index : -1)
+      .filter((index) => index >= 0);
+    const currentSongOffset = songIndexes.findIndex((index) => index === currentQueueIndex);
+    if (currentSongOffset < 0 || songIndexes.length - currentSongOffset - 1 > FILLER_TOP_UP_THRESHOLD) {
+      return;
+    }
+    const remainingSeconds = songIndexes.slice(currentSongOffset).reduce((total, index, offset) => {
+      const duration = playlistItemDuration(currentTrackQueue[index], currentTrack.duration || 240);
+      return total + (offset === 0 ? Math.max(1, duration - playbackTime) : duration);
+    }, 0);
+    const effectiveFillerElapsed = fillerElapsedForTime(publicTrackCatalog, playablePrograms, new Date()) + remainingSeconds;
+    void requestFillerTopUpIfNeeded(
+      program,
+      currentTrackQueue,
+      currentQueueIndex,
+      effectiveFillerElapsed,
+    );
+  }, [
+    currentQueueIndex,
+    currentTrack,
+    currentTrackQueue,
+    playablePrograms,
+    playbackTime,
+    playing,
+    publicTrackCatalog,
+    requestFillerTopUpIfNeeded,
+  ]);
 
   // 直播播放模式下持续跟随时间线：定时节目到点即切换，错过页面刷新窗口也按当前时间定位。
   useEffect(() => {
@@ -2802,7 +3237,7 @@ export function App() {
     audio.src = audioUrl;
     audio.load();
 
-    if (!playing || !audioUrl || !currentBackgroundItem) {
+    if (!playing || !audioUrl || !currentBackgroundItem || isTransitionQueueItem) {
       return;
     }
 
@@ -2828,6 +3263,7 @@ export function App() {
     currentBackgroundEffects.length,
     currentBackgroundItem,
     currentTrack.id,
+    isTransitionQueueItem,
     playing,
   ]);
 
@@ -2932,7 +3368,7 @@ export function App() {
   ]);
 
   useEffect(() => {
-    if (!currentQueueItem || currentQueueItem.type !== "song" || currentQueueItem.lyrics || !currentQueueItem.hash) {
+    if (!currentQueueItem || currentQueueItem.type !== "song" || currentQueueItem.lyrics || (!currentQueueItem.hash && !currentQueueItem.sourceId)) {
       return;
     }
     const key = playlistItemKey(currentQueueItem);
@@ -2944,7 +3380,10 @@ export function App() {
     const params = new URLSearchParams({
       artist: currentQueueItem.artist ?? "",
       duration: String(currentQueueItem.duration ?? 0),
-      hash: currentQueueItem.hash,
+      hash: currentQueueItem.hash ?? "",
+      mediaId: currentQueueItem.mediaId ?? "",
+      source: currentQueueItem.source ?? "kugou",
+      sourceId: currentQueueItem.sourceId ?? "",
       title: currentQueueItem.title,
     });
     if (currentQueueItem.albumAudioId) {
@@ -2975,13 +3414,81 @@ export function App() {
   }, [currentQueueItem, runtimeLyrics]);
 
   useEffect(() => {
+    const localAudioUrls = currentTrackQueue
+      .map((item) => item.audioUrl ?? "")
+      .filter((url) => url.startsWith("/storage/audio/"));
+    localAudioUrls.forEach((url) => {
+      void fetch(url, { cache: "force-cache" }).catch(() => undefined);
+    });
+  }, [currentTrack.id, currentTrackQueue]);
+
+  useEffect(() => {
+    if (!remoteSongResolutionKey || !currentProgram || !currentQueueItem) {
+      return;
+    }
+    let cancelled = false;
+    setRuntimeAudioUrls((current) => ({
+      ...current,
+      [remoteSongResolutionKey]: { resolvedAt: 0, url: "" },
+    }));
+    const expectedSource = String(currentQueueItem.source ?? "");
+    const expectedSourceId = String(currentQueueItem.sourceId ?? currentQueueItem.hash ?? "");
+    const expectedTitle = currentQueueItem.title;
+    void apiJson<{ audioUrl: string; source?: string; sourceId?: string; title?: string }>(
+      `/api/programs/${currentProgram.id}/playlist/${currentQueueIndex}/resolve-audio`,
+      {
+        body: JSON.stringify({ expectedSource, expectedSourceId, expectedTitle }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      },
+    )
+      .then((result) => {
+        if (cancelled || !result.audioUrl) {
+          return;
+        }
+        if (
+          (expectedSourceId && result.sourceId && expectedSourceId !== String(result.sourceId)) ||
+          (expectedSource && result.source && expectedSource !== result.source) ||
+          (!expectedSourceId && result.title && expectedTitle !== result.title)
+        ) {
+          throw new Error("音乐地址与当前显示歌曲不一致");
+        }
+        setRuntimeAudioUrls((current) => ({
+          ...current,
+          [remoteSongResolutionKey]: { resolvedAt: Date.now(), url: result.audioUrl },
+        }));
+      })
+      .catch(() => {
+        if (cancelled) {
+          return;
+        }
+        setRuntimeAudioUrls((current) => ({
+          ...current,
+          [remoteSongResolutionKey]: { resolvedAt: Date.now(), url: "" },
+        }));
+        // 单曲地址失效时跳过该曲，避免定时节目结束后停在无声状态。
+        window.setTimeout(() => audioRef.current?.dispatchEvent(new Event("ended")), 250);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentProgram?.id, currentQueueIndex, remoteSongResolutionKey]);
+
+  useEffect(() => {
     const audio = audioRef.current;
     if (!audio) {
       return;
     }
-    const requestedSeek = pendingAudioSeek?.audioUrl === currentAudioUrl ? Math.max(0, pendingAudioSeek.seconds) : 0;
+    const hasRequestedSeek = Boolean(
+      pendingAudioSeek &&
+      pendingAudioSeek.trackId === currentTrack.id &&
+      pendingAudioSeek.queueIndex === currentQueueIndex &&
+      (pendingAudioSeek.audioUrl === currentAudioUrl || Boolean(remoteSongResolutionKey)),
+    );
+    const requestedSeek = hasRequestedSeek ? Math.max(0, pendingAudioSeek?.seconds ?? 0) : 0;
     const applyRequestedSeek = () => {
-      if (!requestedSeek) {
+      if (!hasRequestedSeek) {
         return;
       }
       const duration = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : currentQueueItem?.duration || currentTrack.duration || 1;
@@ -2991,14 +3498,6 @@ export function App() {
         // Some remote audio URLs can reject seeking before metadata is ready.
       }
     };
-    const playAfterLoad = () => {
-      applyRequestedSeek();
-      if (!playing || !currentAudioUrl || mainPlaybackDelayMs > 0) {
-        return;
-      }
-      audio.play().catch(() => setPlaying(false));
-    };
-
     setLiveProgress(0);
     setPlaybackTime(requestedSeek);
     setPlaybackDuration(currentQueueItem?.duration || currentTrack.duration || 1);
@@ -3006,23 +3505,14 @@ export function App() {
     const currentAudioSrc = audio.currentSrc || audio.src || "";
     const sourceChanged = currentAudioSrc !== targetAudioSrc;
 
-    if (sourceChanged) {
-      audio.volume = volume;
-    }
-
     audio.addEventListener("loadedmetadata", applyRequestedSeek, { once: true });
-    audio.addEventListener("canplay", playAfterLoad, { once: true });
     if (sourceChanged) {
       audio.src = currentAudioUrl || "";
       audio.load();
     }
     applyRequestedSeek();
-    if (!sourceChanged || audio.readyState >= 2) {
-      playAfterLoad();
-    }
     return () => {
       audio.removeEventListener("loadedmetadata", applyRequestedSeek);
-      audio.removeEventListener("canplay", playAfterLoad);
     };
   }, [currentAudioUrl, currentQueueItem?.duration, currentTrack.duration, pendingAudioSeek]);
 
@@ -3035,6 +3525,8 @@ export function App() {
       let cancelled = false;
       let requested = false;
       let playTimer: number | null = null;
+      let bufferFallbackTimer: number | null = null;
+      const effectStartedAt = performance.now();
       const playWhenReady = () => {
         if (cancelled || requested) {
           return;
@@ -3050,14 +3542,24 @@ export function App() {
             }
           });
         };
-        if (mainPlaybackDelayMs > 0) {
-          playTimer = window.setTimeout(start, mainPlaybackDelayMs);
+        const remainingDelayMs = Math.max(0, mainPlaybackDelayMs - (performance.now() - effectStartedAt));
+        if (remainingDelayMs > 0) {
+          playTimer = window.setTimeout(start, remainingDelayMs);
         } else {
           start();
         }
       };
 
-      if (audio.readyState >= 2) {
+      const localGeneratedAudio = currentAudioUrl.startsWith("/storage/audio/") || currentAudioUrl.includes("/storage/audio/");
+      const scheduleBufferedFallback = () => {
+        if (!bufferFallbackTimer) {
+          bufferFallbackTimer = window.setTimeout(playWhenReady, 4000);
+        }
+      };
+      if (localGeneratedAudio && audio.readyState < 4) {
+        audio.addEventListener("canplaythrough", playWhenReady, { once: true });
+        audio.addEventListener("loadeddata", scheduleBufferedFallback, { once: true });
+      } else if (audio.readyState >= 2) {
         playWhenReady();
       } else {
         audio.addEventListener("loadeddata", playWhenReady, { once: true });
@@ -3069,20 +3571,25 @@ export function App() {
         if (playTimer) {
           window.clearTimeout(playTimer);
         }
+        if (bufferFallbackTimer) {
+          window.clearTimeout(bufferFallbackTimer);
+        }
         audio.removeEventListener("loadeddata", playWhenReady);
         audio.removeEventListener("canplay", playWhenReady);
+        audio.removeEventListener("canplaythrough", playWhenReady);
+        audio.removeEventListener("loadeddata", scheduleBufferedFallback);
       };
     }
     audio.pause();
-  }, [currentAudioUrl, currentTrack, mainPlaybackDelayMs, pendingAudioSeek, playing]);
+  }, [currentAudioUrl, currentTrack.id, mainPlaybackDelayMs, pendingAudioSeek, playing]);
 
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) {
       return;
     }
-    audio.volume = volume;
-  }, [volume]);
+    audio.volume = currentMainVolume;
+  }, [currentMainVolume]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -3121,8 +3628,10 @@ export function App() {
         if (nextAudioUrl) {
           setPendingAudioSeek({
             audioUrl: nextAudioUrl,
+            queueIndex: nextQueueIndex,
             requestId: Date.now(),
             seconds: 0,
+            trackId: currentTrack.id,
           });
         }
         setPlaying(true);
@@ -3135,10 +3644,7 @@ export function App() {
         liveEndedTrackRef.current = { dateKey, trackId: currentTrack.id };
 
         const currentTimelineState = liveStateForTime(publicTrackCatalog, playablePrograms, now, null);
-        const currentTimelineProgram = currentTimelineState
-          ? programForTrack(currentTimelineState.track, playablePrograms)
-          : undefined;
-        if (currentTimelineState && currentTimelineProgram?.scheduledAt && currentTimelineState.track.id !== currentTrack.id) {
+        if (currentTimelineState && currentTimelineState.track.id !== currentTrack.id) {
           applyLivePlaybackState(currentTimelineState, true);
           return;
         }
@@ -3249,39 +3755,32 @@ export function App() {
     livePlaybackStartedRef.current = false;
     liveEndedTrackRef.current = null;
     liveInterruptedFillerRef.current = null;
-    if (track.id === currentTrack.id) {
+    if (track.id === currentTrack.id && playing) {
       setMainPlaybackLeadEnabled(false);
-      setPlaying((value) => !value);
+      setPlaying(false);
       return;
     }
-    setMainPlaybackLeadEnabled(false);
-    setCurrentTrack(track);
-    setCurrentQueueIndex(0);
-    setPlaying(true);
-    setLiveProgress(0);
-    setPlaybackTime(0);
-    setPlaybackDuration(track.duration || 1);
-  };
 
-  const playProgramFromBeginning = (program: ProgramRecord, index: number) => {
-    const targetTrack = programToTrack(program, index);
-    const targetQueue = playbackQueueForTrack(targetTrack);
+    const targetQueue = playbackQueueForTrack(track);
     const targetQueueItem = targetQueue[0];
-    const targetAudioUrl = targetQueueItem?.audioUrl || targetTrack.audioUrl;
-    livePlaybackStartedRef.current = true;
-    liveInterruptedFillerRef.current = null;
+    const targetAudioUrl = targetQueueItem?.audioUrl || track.audioUrl;
+
+    // “今日已播”和点播列表每次从暂停状态重新播放时，都从整档节目开头开始：
+    // 转场 -> 按设置先播背景或人声 -> 背景与人声持续混音。
     setMainPlaybackLeadEnabled(true);
-    setCurrentTrack(targetTrack);
+    setCurrentTrack(track);
     setCurrentQueueIndex(0);
     setPlaying(Boolean(targetAudioUrl));
     setLiveProgress(0);
     setPlaybackTime(0);
-    setPlaybackDuration(targetQueueItem?.duration || targetTrack.duration || 1);
+    setPlaybackDuration(targetQueueItem?.duration || track.duration || 1);
     if (targetAudioUrl) {
       setPendingAudioSeek({
         audioUrl: targetAudioUrl,
+        queueIndex: 0,
         requestId: Date.now(),
         seconds: 0,
+        trackId: track.id,
       });
     }
   };
@@ -3318,8 +3817,10 @@ export function App() {
         setCurrentQueueIndex(targetLiveState.queueIndex);
         setPendingAudioSeek({
           audioUrl: targetAudioUrl,
+          queueIndex: targetLiveState.queueIndex,
           requestId: Date.now(),
           seconds: targetLiveState.seekSeconds,
+          trackId: targetTrack.id,
         });
         setPlaybackTime(targetLiveState.seekSeconds);
         setPlaybackDuration(targetQueueItem?.duration || targetTrack.duration || 1);
@@ -3497,6 +3998,7 @@ export function App() {
           type: programType,
           title,
           categoryId: programCategoryId || null,
+          contentMode: programType === "custom" ? customContentMode : "ai",
           prompt: programPrompt,
           hostId,
           hostIds: programHostIds,
@@ -3510,6 +4012,7 @@ export function App() {
                   hostId: kugou.hostId,
                   maxSongs: kugou.maxSongs,
                   name: kugou.name,
+                  provider: kugou.provider,
                   quality: kugou.quality,
                   rankType: kugou.rankType,
                   searchKeywords: kugou.searchKeywords,
@@ -3539,14 +4042,21 @@ export function App() {
   };
 
   const editProgramPreset = (preset: ProgramPreset) => {
+    const presetProgram = latestProgramForPreset(programHistory, preset);
     setEditingProgramPresetId(preset.id);
     setProgramType(preset.type);
+    setCustomContentMode(preset.contentMode === "direct" ? "direct" : "ai");
     setProgramTitle(preset.title || preset.name);
-    setProgramPrompt(preset.prompt || programPrompt);
+    setProgramPrompt(preset.prompt || "");
     setProgramCategoryId(preset.categoryId ?? "");
-    setProgramPlaybackSpeed(preset.playbackSpeed ?? adminConfig.tts.speed ?? 1);
+    setProgramPlaybackSpeed(presetProgram?.playbackSpeed ?? preset.playbackSpeed ?? adminConfig.tts.speed ?? 1);
     setProgramHostIds(preset.hostIds.length ? preset.hostIds : preset.hostId ? [preset.hostId] : [hosts[0].id]);
     setManualMusicSelected(preset.type === "kugou" ? preset.songs ?? [] : []);
+    setGeneratedProgram(presetProgram);
+    setProgramDraft(presetProgram?.script ?? "");
+    if (presetProgram?.publishDate) {
+      setSelectedTimelineDate(presetProgram.publishDate);
+    }
 
     if (preset.type === "daily-briefing" && preset.hostId) {
       setAdminConfig((current) => ({
@@ -3589,7 +4099,11 @@ export function App() {
     }
 
     setAdminSection("studio");
-    setProgramStatus(`已载入预设「${preset.name}」，可在生成设置和人工编辑区域调整后重新保存。`);
+    setProgramStatus(
+      presetProgram
+        ? `已载入预设「${preset.name}」及其最近生成的文案和声音内容。`
+        : `已载入预设「${preset.name}」；该预设暂无已生成的文案和声音内容。`,
+    );
     notifyAdmin(`正在编辑预设：${preset.name}`, "info");
   };
 
@@ -3616,28 +4130,32 @@ export function App() {
       const dailyBriefing = adminConfig.plugins.dailyBriefing;
       const hotTopics = adminConfig.plugins.hotTopics;
       const kugouMusic = adminConfig.plugins.kugouMusic;
+      const neteaseMusic = adminConfig.plugins.neteaseMusic;
+      const qqMusic = adminConfig.plugins.qqMusic;
       const hotTopicsToken = hotTopics.token.trim() || dailyBriefing.token.trim();
       const dailyReady =
         !dailyBriefing.enabled || (dailyBriefing.apiBaseUrl.trim().length > 0 && dailyBriefing.token.trim().length > 0);
       const hotTopicsReady =
-        !hotTopics.enabled || (hotTopics.apiBaseUrl.trim().length > 0 && hotTopicsToken.length > 0 && hotTopics.type.trim().length > 0);
-      const kugouReady = !kugouMusic.enabled || kugouMusic.cookie.trim().length > 0;
+        !hotTopics.enabled || (hotTopics.apiBaseUrl.trim().length > 0 && hotTopicsToken.length > 0);
+      const musicReady = kugouMusic.apiEnabled || neteaseMusic.enabled || qqMusic.enabled;
       const enabledPlugins = [
         dailyBriefing.enabled ? "每日早报" : "",
         hotTopics.enabled ? "今日热榜" : "",
-        kugouMusic.enabled ? "音乐联播" : "",
+        kugouMusic.apiEnabled ? "酷狗音乐" : "",
+        neteaseMusic.enabled ? "网易云音乐" : "",
+        qqMusic.enabled ? "QQ 音乐" : "",
       ].filter(Boolean);
       setConfigTestStatus((current) => ({
         ...current,
-        plugins: dailyReady && hotTopicsReady && kugouReady
-          ? `${enabledPlugins.join("、") || "采集插件"}配置完整，可采集`
-          : "采集插件缺少必要配置或酷狗扫码登录",
+        plugins: dailyReady && hotTopicsReady && musicReady
+          ? `${enabledPlugins.join("、") || "接口 API"}配置完整，可调用`
+          : "接口 API 缺少必要连接配置，或没有启用音乐 API",
       }));
       notifyAdmin(
-        dailyReady && hotTopicsReady && kugouReady
-          ? `${enabledPlugins.join("、") || "采集插件"}配置完整，可采集`
-          : "采集插件缺少必要配置或酷狗扫码登录",
-        dailyReady && hotTopicsReady && kugouReady ? "success" : "error",
+        dailyReady && hotTopicsReady && musicReady
+          ? `${enabledPlugins.join("、") || "接口 API"}配置完整，可调用`
+          : "接口 API 缺少必要连接配置，或没有启用音乐 API",
+        dailyReady && hotTopicsReady && musicReady ? "success" : "error",
       );
       return;
     }
@@ -3647,7 +4165,7 @@ export function App() {
         ? true
         : "apiKey" in config && String(config.apiKey).trim().length > 0;
     const hasModel = "model" in config && String(config.model).trim().length > 0;
-    const hasEndpoint = service === "tts" && adminConfig.tts.engine === "local" ? true : hasBaseUrl;
+    const hasEndpoint = hasBaseUrl;
 
     if (!hasEndpoint || !hasApiKey || !hasModel) {
       const message = "缺少 endpoint / key / model";
@@ -3741,6 +4259,7 @@ export function App() {
 
   const selectProgram = (program: ProgramRecord) => {
     setGeneratedProgram(program);
+    setSunoCandidates([]);
     setProgramHostIds(programHostIdsForProgram(program));
     setProgramScheduledTime(timeInputValueFromDate(program.scheduledAt));
     if (!isProgramPlayable(program)) {
@@ -3753,7 +4272,7 @@ export function App() {
     }, 80);
   };
 
-  const generateProgram = async () => {
+  const generateProgram = async (voicePrompt = "") => {
     if (programBusy) {
       return;
     }
@@ -3779,12 +4298,17 @@ export function App() {
         method: "POST",
       });
       setConfigSavedAt(saved.savedAt);
-      setBackendStatus("配置已同步，正在生成节目文案...");
-      setProgramStatus("正在生成节目文案，生成后会立即写入数据库...");
+      setBackendStatus(customContentMode === "direct" ? "配置已同步，正在生成原文配音..." : "配置已同步，正在生成节目文案...");
+      setProgramStatus(
+        customContentMode === "direct"
+          ? "正在按原文生成配音，原文不会经过大模型改写..."
+          : "正在生成节目文案，生成后会立即写入数据库...",
+      );
 
       const result = await apiJson<ProgramGenerateResponse>("/api/programs/generate", {
         body: JSON.stringify({
           categoryId: programCategoryId || undefined,
+          contentMode: customContentMode,
           host: activeHost.name,
           hosts: selectedProgramHosts.length ? selectedProgramHosts : [activeHost],
           playbackSpeed: programPlaybackSpeed,
@@ -3792,6 +4316,7 @@ export function App() {
           prompt: programPrompt,
           scheduledAt: programScheduledAtForRequest(),
           title: programTitle,
+          voicePrompt,
         }),
         headers: { "Content-Type": "application/json" },
         method: "POST",
@@ -3835,7 +4360,7 @@ export function App() {
     });
   };
 
-  const generateDailyBriefing = async () => {
+  const generateDailyBriefing = async (voicePrompt = "") => {
     if (dailyBriefingBusy) {
       return;
     }
@@ -3856,6 +4381,8 @@ export function App() {
           playbackSpeed: adminConfig.plugins.dailyBriefing.playbackSpeed,
           publishDate: selectedTimelineDate,
           scheduledAt: programScheduledAtForRequest(),
+          title: programTitle,
+          voicePrompt,
         }),
         headers: { "Content-Type": "application/json" },
         method: "POST",
@@ -3890,7 +4417,7 @@ export function App() {
     }
   };
 
-  const generateHotTopics = async () => {
+  const generateHotTopics = async (voicePrompt = "") => {
     if (hotTopicsBusy) {
       return;
     }
@@ -3911,6 +4438,8 @@ export function App() {
           playbackSpeed: adminConfig.plugins.hotTopics.playbackSpeed,
           publishDate: selectedTimelineDate,
           scheduledAt: programScheduledAtForRequest(),
+          title: programTitle,
+          voicePrompt,
         }),
         headers: { "Content-Type": "application/json" },
         method: "POST",
@@ -3985,64 +4514,96 @@ export function App() {
     }
   };
 
-  const checkKugouQr = async () => {
-    if (!kugouQr || kugouLoginBusy) {
+  useEffect(() => {
+    if (!kugouQr) {
       return;
     }
-    setKugouLoginBusy(true);
-    setKugouStatus("正在检查酷狗扫码状态...");
-    try {
-      const result = await apiJson<{
-        config?: AdminConfig;
-        cookie?: string;
-        message?: string;
-        savedAt?: string;
-        status: number;
-      }>("/api/plugins/kugou/login/check", {
-        body: JSON.stringify({ key: kugouQr.key }),
-        headers: { "Content-Type": "application/json" },
-        method: "POST",
-      });
-      if (result.config) {
-        setAdminConfig(result.config);
-        writeAdminConfig(result.config);
-        if (result.savedAt) {
-          window.localStorage.setItem("star-radio.admin-config.saved-at", result.savedAt);
-          setConfigSavedAt(result.savedAt);
-        }
-      } else if (result.cookie) {
-        setAdminConfig((current) => ({
-          ...current,
-          plugins: {
-            ...current.plugins,
-            kugouMusic: {
-              ...current.plugins.kugouMusic,
-              cookie: result.cookie ?? current.plugins.kugouMusic.cookie,
-            },
-          },
-        }));
-      }
-      setKugouStatus(result.message ?? "已获取酷狗扫码状态");
-      notifyAdmin(result.message ?? "已获取酷狗扫码状态", result.status === 4 ? "success" : "info");
-      if (result.status === 4) {
-        setKugouQr(null);
-      }
-    } catch (error) {
-      const message = `酷狗扫码状态检查失败：${errorMessage(error)}`;
-      setKugouStatus(message);
-      notifyAdmin(message, "error");
-    } finally {
-      setKugouLoginBusy(false);
-    }
-  };
 
-  const generateKugouProgram = async () => {
+    let stopped = false;
+    let retryTimer = 0;
+    const qrKey = kugouQr.key;
+
+    const pollKugouQr = async () => {
+      try {
+        const result = await apiJson<{
+          config?: AdminConfig;
+          cookie?: string;
+          message?: string;
+          savedAt?: string;
+          status: number;
+        }>("/api/plugins/kugou/login/check", {
+          body: JSON.stringify({ key: qrKey }),
+          headers: { "Content-Type": "application/json" },
+          method: "POST",
+        });
+        if (stopped) {
+          return;
+        }
+        if (result.status === 4) {
+          if (result.config) {
+            setAdminConfig(result.config);
+            writeAdminConfig(result.config);
+          } else if (result.cookie) {
+            setAdminConfig((current) => {
+              const nextConfig = {
+                ...current,
+                plugins: {
+                  ...current.plugins,
+                  kugouMusic: {
+                    ...current.plugins.kugouMusic,
+                    cookie: result.cookie ?? current.plugins.kugouMusic.cookie,
+                  },
+                },
+              };
+              writeAdminConfig(nextConfig);
+              return nextConfig;
+            });
+          }
+          if (result.savedAt) {
+            window.localStorage.setItem("star-radio.admin-config.saved-at", result.savedAt);
+            setConfigSavedAt(result.savedAt);
+          }
+          const message = result.message ?? "酷狗登录成功，Cookie 已自动填入并保存";
+          setKugouStatus(message);
+          notifyAdmin(message, "success");
+          setKugouQr(null);
+          return;
+        }
+        if (result.status === 0) {
+          const message = result.message ?? "二维码已过期，请重新扫码";
+          setKugouStatus(message);
+          notifyAdmin(message, "info");
+          setKugouQr(null);
+          return;
+        }
+        setKugouStatus(`${result.message ?? "等待扫码"} · 正在自动检测`);
+      } catch (error) {
+        if (!stopped) {
+          setKugouStatus(`扫码状态自动检测暂时失败，将继续重试：${errorMessage(error)}`);
+        }
+      }
+      if (!stopped) {
+        retryTimer = window.setTimeout(() => void pollKugouQr(), 1800);
+      }
+    };
+
+    setKugouStatus("二维码已生成，等待扫码 · 正在自动检测");
+    retryTimer = window.setTimeout(() => void pollKugouQr(), 800);
+    return () => {
+      stopped = true;
+      window.clearTimeout(retryTimer);
+    };
+    // The QR key starts and stops one self-scheduling polling cycle.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kugouQr?.key]);
+
+  const generateKugouProgram = async (voicePrompt = "") => {
     if (kugouProgramBusy) {
       return;
     }
 
     setKugouProgramBusy(true);
-    setProgramStatus("正在让 AI 编排音乐联播节目...");
+    setProgramStatus("正在从所选音乐来源编排联播节目...");
     setPlaying(false);
 
     try {
@@ -4052,7 +4613,7 @@ export function App() {
         headers: { "Content-Type": "application/json" },
         method: "POST",
       });
-      const result = await apiJson<ProgramGenerateResponse>("/api/plugins/kugou/generate", {
+      const result = await apiJson<ProgramGenerateResponse>("/api/plugins/music/generate", {
         body: JSON.stringify({
           categoryId: programCategoryId || undefined,
           playbackSpeed: programPlaybackSpeed,
@@ -4061,6 +4622,7 @@ export function App() {
           scheduledAt: programScheduledAtForRequest(),
           songs: manualMusicSelected,
           title: adminConfig.plugins.kugouMusic.name,
+          voicePrompt,
         }),
         headers: { "Content-Type": "application/json" },
         method: "POST",
@@ -4086,18 +4648,249 @@ export function App() {
     }
   };
 
+  const probeMediaProgram = async (input: Pick<MediaProgramInput, "mediaUrl" | "siteCookie">) => {
+    if (mediaProgramBusy) {
+      return null;
+    }
+    setMediaProgramBusy(true);
+    setProgramStatus("正在检测媒体链接、音轨格式和时长...");
+    try {
+      const result = await apiJson<{ message?: string; probe: MediaProbeResult }>("/api/media-programs/probe", {
+        body: JSON.stringify(input),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      });
+      setProgramStatus(result.message ?? "媒体链接检测成功");
+      notifyAdmin(result.message ?? "媒体链接检测成功", "success");
+      return result.probe;
+    } catch (error) {
+      const message = `媒体链接检测失败：${errorMessage(error)}`;
+      setProgramStatus(message);
+      notifyAdmin(message, "error");
+      return null;
+    } finally {
+      setMediaProgramBusy(false);
+    }
+  };
+
+  const monitorMediaProgramJob = async (jobId: string) => {
+    for (let attempt = 0; attempt < 720; attempt += 1) {
+      await wait(5_000);
+      try {
+        const result = await apiJson<{ message?: string; program: ProgramRecord }>(`/api/media-programs/jobs/${jobId}`);
+        setProgramHistory((current) => [
+          result.program,
+          ...current.filter((program) => program.id !== result.program.id),
+        ]);
+        setGeneratedProgram((current) => current?.id === jobId ? result.program : current);
+        if (result.program.status === "ready") {
+          setProgramStatus(result.message ?? "网络媒体节目后台生成完成");
+          notifyAdmin(result.message ?? "网络媒体节目后台生成完成", "success");
+          void refreshProgramArchives(false);
+          return;
+        }
+        if (result.program.status === "failed") {
+          const message = result.message ?? `网络媒体节目后台生成失败：${result.program.errorMessage || "未知错误"}`;
+          setProgramStatus(message);
+          notifyAdmin(message, "error");
+          return;
+        }
+      } catch {
+        // 短暂断网或页面切换不终止服务端任务，下一轮继续读取状态。
+      }
+    }
+  };
+
+  const generateMediaProgram = async (input: MediaProgramInput, voicePrompt = "", background = false) => {
+    if (mediaProgramBusy) {
+      return null;
+    }
+    setMediaProgramBusy(true);
+    setPlaying(false);
+    setProgramStatus(background
+      ? "正在保存网络媒体节目后台任务..."
+      : input.localCopy ? "正在检测链接并提取媒体音轨，请保持页面打开..." : "正在检测链接并生成媒体节目...");
+    try {
+      await apiJson<ConfigResponse>("/api/config", {
+        body: JSON.stringify({ config: adminConfig }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      });
+      const selectedProgramHosts = hosts
+        .filter((hostItem) => programHostIds.includes(hostItem.id))
+        .map((hostItem) => ({ id: hostItem.id, name: hostItem.name, tone: hostItem.tone, voice: hostItem.voice }));
+      const result = await apiJson<ProgramListResponse & {
+        message?: string;
+        probe?: MediaProbeResult;
+        program: ProgramRecord;
+      }>(background ? "/api/media-programs/generate-background" : "/api/media-programs/generate", {
+        body: JSON.stringify({
+          ...input,
+          categoryId: programCategoryId || undefined,
+          hosts: selectedProgramHosts.length ? selectedProgramHosts : [activeHost],
+          playbackSpeed: programPlaybackSpeed,
+          publishDate: selectedTimelineDate,
+          scheduledAt: programScheduledAtForRequest(),
+          voicePrompt,
+        }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      });
+      setGeneratedProgram(result.program);
+      setProgramHistory(result.programs);
+      setProgramDraft(result.program.script);
+      setProgramTitle(result.program.title);
+      setProgramPrompt(input.introMode === "direct" ? input.introText : input.introPrompt);
+      setProgramStatus(result.message ?? (background ? "网络媒体节目已保存并转入后台生成" : "网络媒体节目已生成"));
+      notifyAdmin(result.message ?? (background ? "网络媒体节目已保存并转入后台生成" : "网络媒体节目已生成"), "success");
+      if (background) {
+        void monitorMediaProgramJob(result.program.id);
+        return null;
+      }
+      void refreshProgramArchives(false);
+      return result.probe ?? null;
+    } catch (error) {
+      const message = `网络媒体节目生成失败：${errorMessage(error)}`;
+      setProgramStatus(message);
+      notifyAdmin(message, "error");
+      return null;
+    } finally {
+      setMediaProgramBusy(false);
+    }
+  };
+
+  const generateSunoPlan = async (input: AiMusicInput) => {
+    if (sunoMusicBusy) {
+      return null;
+    }
+    setSunoMusicBusy(true);
+    setProgramStatus("正在调用大模型创作 Suno 提示词与原创歌词...");
+    try {
+      const result = await apiJson<{ message?: string; plan: AiMusicPlan }>("/api/suno/plan", {
+        body: JSON.stringify(input),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      });
+      setProgramTitle(result.plan.title);
+      setProgramPrompt(input.brief);
+      setProgramStatus(result.message ?? "AI 音乐方案已生成");
+      notifyAdmin(result.message ?? "AI 音乐方案已生成", "success");
+      return result.plan;
+    } catch (error) {
+      const message = `AI 音乐方案生成失败：${errorMessage(error)}`;
+      setProgramStatus(message);
+      notifyAdmin(message, "error");
+      return null;
+    } finally {
+      setSunoMusicBusy(false);
+    }
+  };
+
+  const generateSunoMusic = async (input: AiMusicInput) => {
+    if (sunoMusicBusy) {
+      return null;
+    }
+    setSunoMusicBusy(true);
+    setPlaying(false);
+    setProgramStatus(input.mode === "auto" ? "正在全自动创作并生成 AI 音乐，这通常需要 1 到 3 分钟..." : "正在使用手动歌词与提示词生成 AI 音乐...");
+    try {
+      await apiJson<ConfigResponse>("/api/config", {
+        body: JSON.stringify({ config: adminConfig }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      });
+      const result = await apiJson<ProgramListResponse & {
+        alternatives: SunoCandidate[];
+        message?: string;
+        plan: AiMusicPlan;
+        program: ProgramRecord;
+      }>("/api/suno/generate", {
+        body: JSON.stringify({
+          ...input,
+          categoryId: programCategoryId || undefined,
+          publishDate: selectedTimelineDate,
+          scheduledAt: programScheduledAtForRequest(),
+          title: input.title || programTitle,
+        }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      });
+      setGeneratedProgram(result.program);
+      setProgramHistory(result.programs);
+      setSunoCandidates(result.alternatives ?? []);
+      setProgramDraft(result.program.script);
+      setProgramTitle(result.program.title);
+      setProgramPrompt(input.brief);
+      setProgramStatus(result.message ?? "AI 音乐已生成");
+      notifyAdmin(result.message ?? "AI 音乐已生成", "success");
+      void refreshProgramArchives(false);
+      return result.plan;
+    } catch (error) {
+      const message = `AI 音乐生成失败：${errorMessage(error)}`;
+      setProgramStatus(message);
+      notifyAdmin(message, "error");
+      return null;
+    } finally {
+      setSunoMusicBusy(false);
+    }
+  };
+
+  const selectSunoCandidate = async (candidate: SunoCandidate) => {
+    if (!generatedProgram || generatedProgram.sourceType !== "suno" || sunoMusicBusy) {
+      return;
+    }
+    setSunoMusicBusy(true);
+    setProgramStatus(`正在为第 ${candidate.slotIndex + 1} 首歌曲切换版本...`);
+    try {
+      const result = await apiJson<ProgramListResponse & { message?: string; program: ProgramRecord }>("/api/suno/select", {
+        body: JSON.stringify({
+          clipId: candidate.id,
+          programId: generatedProgram.id,
+          slotIndex: candidate.slotIndex,
+        }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      });
+      setGeneratedProgram(result.program);
+      setProgramHistory(result.programs);
+      setSunoCandidates((current) => current.map((item) => ({
+        ...item,
+        selected: item.slotIndex === candidate.slotIndex ? item.id === candidate.id : item.selected,
+      })));
+      setProgramStatus(result.message ?? "Suno 歌曲版本已切换");
+      notifyAdmin(result.message ?? "Suno 歌曲版本已切换", "success");
+    } catch (error) {
+      const message = `切换 Suno 歌曲版本失败：${errorMessage(error)}`;
+      setProgramStatus(message);
+      notifyAdmin(message, "error");
+    } finally {
+      setSunoMusicBusy(false);
+    }
+  };
+
   // 统一入口：按节目类型分发到对应生成逻辑。
-  const generateProgramNow = () => {
+  const generateProgramNow = (voicePrompt = "") => {
+    if (
+      programType !== "suno" &&
+      generatedProgram &&
+      programDraft.trim() &&
+      (programDraft.trim() !== generatedProgram.script.trim() || generatedProgram.status !== "ready")
+    ) {
+      return regenerateProgramTts(voicePrompt);
+    }
     if (programType === "daily-briefing") {
-      return generateDailyBriefing();
+      return generateDailyBriefing(voicePrompt);
     }
     if (programType === "hot-topics") {
-      return generateHotTopics();
+      return generateHotTopics(voicePrompt);
     }
     if (programType === "kugou") {
-      return generateKugouProgram();
+      return generateKugouProgram(voicePrompt);
     }
-    return generateProgram();
+    if (programType === "suno") {
+      return Promise.resolve();
+    }
+    return generateProgram(voicePrompt);
   };
 
   const searchManualMusic = async () => {
@@ -4116,8 +4909,8 @@ export function App() {
         headers: { "Content-Type": "application/json" },
         method: "POST",
       });
-      const result = await apiJson<{ message?: string; songs: MusicCandidate[] }>("/api/plugins/kugou/search", {
-        body: JSON.stringify({ keywords, limit: 12 }),
+      const result = await apiJson<{ message?: string; songs: MusicCandidate[] }>("/api/plugins/music/search", {
+        body: JSON.stringify({ keywords, limit: 12, provider: adminConfig.plugins.kugouMusic.provider }),
         headers: { "Content-Type": "application/json" },
         method: "POST",
       });
@@ -4131,9 +4924,9 @@ export function App() {
   };
 
   const addManualMusicSong = (song: MusicCandidate) => {
-    const key = song.hash || `${song.artist ?? ""}-${song.title}`;
+    const key = songKey(song);
     setManualMusicSelected((current) => {
-      if (current.some((item) => (item.hash || `${item.artist ?? ""}-${item.title}`) === key)) {
+      if (current.some((item) => songKey(item) === key)) {
         return current;
       }
       return [...current, song];
@@ -4234,13 +5027,13 @@ export function App() {
     }
   };
 
-  const saveProgramDraft = async () => {
+  const saveProgramDraft = async (voicePrompt = "") => {
     if (!generatedProgram) {
       return;
     }
 
     try {
-      const segments = draftSegmentsForHosts(programDraft, programHostIds, generatedProgram.sourceType);
+      const segments = draftSegmentsForHosts(programDraft, programHostIds, generatedProgram.sourceType, voicePrompt);
       const metadata = await apiJson<{ message?: string; program: ProgramRecord }>(`/api/programs/${generatedProgram.id}`, {
         body: JSON.stringify({ playbackSpeed: programPlaybackSpeed, title: generatedProgram.title }),
         headers: { "Content-Type": "application/json" },
@@ -4261,7 +5054,7 @@ export function App() {
     }
   };
 
-  const regenerateProgramTts = async () => {
+  const regenerateProgramTts = async (voicePrompt = "") => {
     if (!generatedProgram || programTtsBusy) {
       return;
     }
@@ -4269,7 +5062,7 @@ export function App() {
     setProgramTtsBusy(true);
     setProgramStatus("正在根据最新文稿重新生成语音...");
     try {
-      const segments = draftSegmentsForHosts(programDraft, programHostIds, generatedProgram.sourceType);
+      const segments = draftSegmentsForHosts(programDraft, programHostIds, generatedProgram.sourceType, voicePrompt);
       await apiJson<{ program: ProgramRecord }>(`/api/programs/${generatedProgram.id}`, {
         body: JSON.stringify({ playbackSpeed: programPlaybackSpeed, title: generatedProgram.title }),
         headers: { "Content-Type": "application/json" },
@@ -4281,6 +5074,7 @@ export function App() {
         method: "POST",
       });
       const result = await apiJson<ProgramGenerateResponse>(`/api/programs/${generatedProgram.id}/regenerate-tts`, {
+        body: JSON.stringify({ voicePrompt }),
         headers: { "Content-Type": "application/json" },
         method: "POST",
       });
@@ -4394,33 +5188,58 @@ export function App() {
     }
   };
 
-  const pushProgramToHome = async (programId: string) => {
-    if (publishBusy) {
+  const pushProgramToHome = async (programId: string, voicePrompt = "") => {
+    if (programPushBusyId) {
       return;
     }
-    setPublishBusy(true);
-    setProgramStatus("正在调整当前日期播放优先级...");
+    setProgramPushBusyId(programId);
+    setProgramStatus("正在保存最新内容、更新单节目配音并推送...");
     try {
+      const selected = generatedProgram?.id === programId ? generatedProgram : null;
+      const nextSegments = selected
+        ? draftSegmentsForHosts(programDraft, programHostIds, selected.sourceType, voicePrompt)
+        : [];
+      const segmentStylesChanged = selected && voicePrompt.trim()
+        ? selected.segments?.some((segment) => String(segment.style ?? "").trim() !== voicePrompt.trim()) !== false
+        : false;
+      const shouldUpdateContent = Boolean(
+        selected && (
+          programDraft.trim() !== selected.script.trim() ||
+          selected.status !== "ready" ||
+          !selected.audioUrl ||
+          segmentStylesChanged
+        ),
+      );
       const result = await apiJson<ProgramListResponse & { message?: string; program: ProgramRecord; publishDate?: string }>(
         `/api/programs/${programId}/push-home`,
         {
-          body: JSON.stringify({ publishDate: selectedTimelineDate }),
+          body: JSON.stringify({
+            publishDate: selectedTimelineDate,
+            playbackSpeed: selected ? programPlaybackSpeed : undefined,
+            script: shouldUpdateContent ? programDraft : undefined,
+            segments: shouldUpdateContent ? nextSegments : undefined,
+            voicePrompt: shouldUpdateContent ? voicePrompt : undefined,
+          }),
           headers: { "Content-Type": "application/json" },
           method: "POST",
         },
       );
       setProgramHistory(result.programs);
       setGeneratedProgram(result.program);
-      playProgramFromBeginning(result.program, Math.max(0, result.programs.findIndex((program) => program.id === result.program.id)));
-      setProgramStatus(result.message ?? "节目已设为优先播放");
-      notifyAdmin(result.message ?? "节目已设为优先播放", "success");
+      setProgramStatus(result.message ?? "节目内容已更新，原播出时间与排序保持不变");
+      notifyAdmin(result.message ?? "节目内容已更新，原播出时间与排序保持不变", "success");
       void refreshProgramArchives(false);
     } catch (error) {
+      const failedProgram = (error as Error & { data?: { program?: ProgramRecord } }).data?.program;
+      if (failedProgram) {
+        setGeneratedProgram(failedProgram);
+        setProgramHistory((current) => current.map((program) => program.id === failedProgram.id ? failedProgram : program));
+      }
       const message = `立即推送失败：${errorMessage(error)}`;
       setProgramStatus(message);
       notifyAdmin(message, "error");
     } finally {
-      setPublishBusy(false);
+      setProgramPushBusyId("");
     }
   };
 
@@ -4688,6 +5507,7 @@ export function App() {
         backendStatus={backendStatus}
         configSavedAt={configSavedAt}
         configTestStatus={configTestStatus}
+        customContentMode={customContentMode}
         dailyBriefingBusy={dailyBriefingBusy}
         generatedProgram={generatedProgram}
         hotTopicsBusy={hotTopicsBusy}
@@ -4704,6 +5524,7 @@ export function App() {
         manualMusicSearchBusy={manualMusicSearchBusy}
         manualMusicSelected={manualMusicSelected}
         manualMusicStatus={manualMusicStatus}
+        mediaProgramBusy={mediaProgramBusy}
         onAdminConfigChange={updateAdminConfig}
         onAdminConfigSave={saveAdminConfig}
         onDailyBriefingGenerate={generateDailyBriefing}
@@ -4715,7 +5536,6 @@ export function App() {
         onKugouApiNameChange={setKugouApiName}
         onKugouApiParamsChange={setKugouApiParams}
         onKugouGenerate={generateKugouProgram}
-        onKugouQrCheck={checkKugouQr}
         onKugouQrCreate={createKugouQr}
         onKugouStatusRefresh={refreshKugouStatus}
         onManualMusicAdd={addManualMusicSong}
@@ -4723,6 +5543,11 @@ export function App() {
         onManualMusicRemove={removeManualMusicSong}
         onManualMusicReorder={reorderManualMusicSong}
         onManualMusicSearch={searchManualMusic}
+        onMediaGenerate={generateMediaProgram}
+        onMediaProbe={probeMediaProgram}
+        onSunoGenerate={generateSunoMusic}
+        onSunoPlan={generateSunoPlan}
+        onSunoSelect={selectSunoCandidate}
         onLogout={logoutAdmin}
         onProgramsChanged={reloadProgramsAfterFlow}
         onProgramArchiveDelete={deleteProgramArchive}
@@ -4732,6 +5557,7 @@ export function App() {
         onProgramCategoryCreate={createProgramCategory}
         onProgramCategoryDelete={deleteProgramCategory}
         onProgramCategoryRename={renameProgramCategory}
+        onCustomContentModeChange={setCustomContentMode}
         onProgramDraftChange={setProgramDraft}
         onProgramHostToggle={toggleProgramHost}
         onProgramMetadataSave={saveProgramMetadata}
@@ -4772,6 +5598,7 @@ export function App() {
         programPlaybackSpeed={programPlaybackSpeed}
         programPresetBusy={programPresetBusy}
         programPresets={programPresets}
+        programPushBusyId={programPushBusyId}
         programPrompt={programPrompt}
         programScheduledTime={programScheduledTime}
         programRewriteBusy={programRewriteBusy}
@@ -4783,6 +5610,8 @@ export function App() {
         scheduleDrafts={scheduleDrafts}
         selectedTimelineDate={selectedTimelineDate}
         soundEffectCategories={soundEffectCategories}
+        sunoMusicBusy={sunoMusicBusy}
+        sunoCandidates={sunoCandidates}
         systemSettings={systemSettings}
         timelinePrograms={timelinePrograms}
       />
@@ -4792,8 +5621,8 @@ export function App() {
 
   return (
     <div className="app-shell">
-      <audio ref={audioRef} />
-      <audio ref={backgroundAudioRef} />
+      <audio preload="auto" ref={audioRef} />
+      <audio preload="auto" ref={backgroundAudioRef} />
       <header className={`topbar ${scrolled ? "topbar--scrolled" : ""}`}>
         <button className="brand" onClick={() => setActiveNav("首页")} type="button">
           <img alt="" className="brand-icon" src={systemSettings.logoUrl || generatedAssets.icons.waveLogo} />
@@ -5045,11 +5874,11 @@ export function App() {
         <section className="panel track-card">
           <PanelTitle
             icon={<img alt="" className="panel-image-icon" src={generatedAssets.icons.musicNote} />}
-            title="往期AI音乐点播"
+            title="音乐节目点播"
           />
           <div className="track-list">
-            {visibleTracks.length ? (
-              visibleTracks.map((track) => (
+            {libraryTrackCatalog.length ? (
+              libraryTrackCatalog.map((track) => (
                 <div className={`track-row ${track.id === currentTrack.id ? "is-current" : ""}`} key={track.id}>
                   <img alt="" className="track-art" src={track.image} />
                   <span>
@@ -5075,7 +5904,7 @@ export function App() {
                 </div>
               ))
             ) : (
-              <div className="empty-state">暂无可点播的AI音乐</div>
+              <div className="empty-state">暂无已播完的音乐节目</div>
             )}
           </div>
         </section>
@@ -5087,6 +5916,7 @@ export function App() {
             backendStatus={backendStatus}
             configSavedAt={configSavedAt}
             configTestStatus={configTestStatus}
+            customContentMode={customContentMode}
             dailyBriefingBusy={dailyBriefingBusy}
             favoriteTracks={favoriteTracks}
             favorites={favorites}
@@ -5106,6 +5936,7 @@ export function App() {
             manualMusicSearchBusy={manualMusicSearchBusy}
             manualMusicSelected={manualMusicSelected}
             manualMusicStatus={manualMusicStatus}
+            mediaProgramBusy={mediaProgramBusy}
             currentTrackId={currentTrack.id}
             programDraft={programDraft}
             reminders={reminders}
@@ -5122,7 +5953,6 @@ export function App() {
             onKugouApiNameChange={setKugouApiName}
             onKugouApiParamsChange={setKugouApiParams}
             onKugouGenerate={generateKugouProgram}
-            onKugouQrCheck={checkKugouQr}
             onKugouQrCreate={createKugouQr}
             onKugouStatusRefresh={refreshKugouStatus}
             onManualMusicAdd={addManualMusicSong}
@@ -5130,6 +5960,11 @@ export function App() {
             onManualMusicRemove={removeManualMusicSong}
             onManualMusicReorder={reorderManualMusicSong}
             onManualMusicSearch={searchManualMusic}
+            onMediaGenerate={generateMediaProgram}
+            onMediaProbe={probeMediaProgram}
+            onSunoGenerate={generateSunoMusic}
+            onSunoPlan={generateSunoPlan}
+            onSunoSelect={selectSunoCandidate}
             onPlay={playTrack}
             onProgramArchiveDelete={deleteProgramArchive}
             onProgramArchiveDeleteDate={deleteProgramArchivesByDate}
@@ -5138,6 +5973,7 @@ export function App() {
             onProgramCategoryCreate={createProgramCategory}
             onProgramCategoryDelete={deleteProgramCategory}
             onProgramCategoryRename={renameProgramCategory}
+            onCustomContentModeChange={setCustomContentMode}
             onProgramDraftChange={setProgramDraft}
             onProgramHostToggle={toggleProgramHost}
             onProgramMetadataSave={saveProgramMetadata}
@@ -5178,6 +6014,7 @@ export function App() {
             programPlaybackSpeed={programPlaybackSpeed}
             programPresetBusy={programPresetBusy}
             programPresets={programPresets}
+            programPushBusyId={programPushBusyId}
             programPrompt={programPrompt}
             programScheduledTime={programScheduledTime}
             playing={playing}
@@ -5191,6 +6028,8 @@ export function App() {
             scheduleDrafts={scheduleDrafts}
             selectedTimelineDate={selectedTimelineDate}
             soundEffectCategories={soundEffectCategories}
+            sunoMusicBusy={sunoMusicBusy}
+            sunoCandidates={sunoCandidates}
             systemSettings={systemSettings}
             timelinePrograms={timelinePrograms}
           />
@@ -5221,6 +6060,7 @@ type SecondaryPageProps = {
   backendStatus: string;
   configSavedAt: string;
   configTestStatus: Record<ServiceKey, string>;
+  customContentMode: CustomContentMode;
   currentTrackId: string;
   dailyBriefingBusy: boolean;
   favoriteTracks: Track[];
@@ -5241,6 +6081,7 @@ type SecondaryPageProps = {
   manualMusicSearchBusy: boolean;
   manualMusicSelected: MusicCandidate[];
   manualMusicStatus: string;
+  mediaProgramBusy: boolean;
   programDraft: string;
   onAdminConfigChange: <T extends ServiceKey, K extends keyof AdminConfig[T]>(
     service: T,
@@ -5251,14 +6092,13 @@ type SecondaryPageProps = {
   onDailyBriefingGenerate: () => void | Promise<void>;
   onDeleteProgram: (programId: string) => void | Promise<void>;
   onFavorite: (trackId: string) => void;
-  onGenerateProgram: () => void | Promise<void>;
+  onGenerateProgram: (voicePrompt?: string) => void | Promise<void>;
   onGenerateProgramPreset: () => void | Promise<void>;
   onHotTopicsGenerate: () => void | Promise<void>;
   onKugouApiCall: () => void | Promise<void>;
   onKugouApiNameChange: (value: string) => void;
   onKugouApiParamsChange: (value: string) => void;
-  onKugouGenerate: () => void | Promise<void>;
-  onKugouQrCheck: () => void | Promise<void>;
+  onKugouGenerate: (voicePrompt?: string) => void | Promise<void>;
   onKugouQrCreate: () => void | Promise<void>;
   onKugouStatusRefresh: () => void | Promise<void>;
   onManualMusicAdd: (song: MusicCandidate) => void;
@@ -5266,6 +6106,11 @@ type SecondaryPageProps = {
   onManualMusicRemove: (index: number) => void;
   onManualMusicReorder: (index: number, direction: -1 | 1) => void;
   onManualMusicSearch: () => void | Promise<void>;
+  onMediaGenerate: (input: MediaProgramInput, voicePrompt?: string, background?: boolean) => Promise<MediaProbeResult | null>;
+  onMediaProbe: (input: Pick<MediaProgramInput, "mediaUrl" | "siteCookie">) => Promise<MediaProbeResult | null>;
+  onSunoGenerate: (input: AiMusicInput) => Promise<AiMusicPlan | null>;
+  onSunoPlan: (input: AiMusicInput) => Promise<AiMusicPlan | null>;
+  onSunoSelect: (candidate: SunoCandidate) => void | Promise<void>;
   onPlay: (track: Track) => void;
   onProgramArchiveDelete: (archiveId: string) => void | Promise<void>;
   onProgramArchiveDeleteDate: (date: string) => void | Promise<void>;
@@ -5274,6 +6119,7 @@ type SecondaryPageProps = {
   onProgramCategoryCreate: (name: string) => void | Promise<void>;
   onProgramCategoryDelete: (categoryId: string) => void | Promise<void>;
   onProgramCategoryRename: (categoryId: string, name: string) => void | Promise<void>;
+  onCustomContentModeChange: (value: CustomContentMode) => void;
   onProgramDraftChange: (value: string) => void;
   onProgramHostToggle: (hostId: string) => void;
   onProgramMetadataSave: (programId: string, patch: ProgramMetadataPatch) => void | Promise<void>;
@@ -5281,14 +6127,14 @@ type SecondaryPageProps = {
   onProgramPromptChange: (value: string) => void;
   onProgramPublishNextDay: () => void | Promise<void>;
   onProgramClearDate: (date: string, pluginId?: string) => void | Promise<void>;
-  onProgramPushHome: (programId: string) => void | Promise<void>;
+  onProgramPushHome: (programId: string, voicePrompt?: string) => void | Promise<void>;
   onProgramPresetDelete: (presetId: string) => void | Promise<void>;
   onProgramPresetEdit: (preset: ProgramPreset) => void;
   onProgramsChanged?: () => void | Promise<void>;
-  onProgramRegenerateTts: () => void | Promise<void>;
+  onProgramRegenerateTts: (voicePrompt?: string) => void | Promise<void>;
   onProgramReorder: (programId: string, direction: -1 | 1) => void | Promise<void>;
   onProgramRewriteScript: () => void | Promise<void>;
-  onProgramSaveDraft: () => void | Promise<void>;
+  onProgramSaveDraft: (voicePrompt?: string) => void | Promise<void>;
   onProgramScheduledTimeChange: (value: string) => void;
   onProgramScheduleDraftChange: (programId: string, value: string) => void;
   onProgramScheduleSave: (programId: string) => void | Promise<void>;
@@ -5315,6 +6161,7 @@ type SecondaryPageProps = {
   programPlaybackSpeed: number;
   programPresetBusy: boolean;
   programPresets: ProgramPreset[];
+  programPushBusyId: string;
   programPrompt: string;
   programScheduledTime: string;
   programType: ProgramType;
@@ -5329,6 +6176,8 @@ type SecondaryPageProps = {
   scheduleDrafts: Record<string, string>;
   selectedTimelineDate: string;
   soundEffectCategories: SoundEffectCategory[];
+  sunoMusicBusy: boolean;
+  sunoCandidates: SunoCandidate[];
   systemSettings: SystemSettings;
   timelinePrograms: ProgramRecord[];
   userLoggedIn: boolean;
@@ -5368,10 +6217,12 @@ type FlowOrchestratorProps = {
 };
 
 const FLOW_SCHEDULED_KIND_LABEL: Record<FlowScheduledKind, string> = {
-  custom: "自定义 AI 节目",
+  custom: "自定义节目",
   "daily-briefing": "每日早报",
   "hot-topics": "今日热榜",
   kugou: "音乐联播",
+  media: "网络媒体节目",
+  suno: "AI音乐",
   existing: "引用已有节目",
   preset: "预设节目",
 };
@@ -5437,6 +6288,7 @@ function FlowOrchestrator(props: FlowOrchestratorProps) {
   } = props;
   const effects = useMemo(() => allFlowEffects(soundEffectCategories), [soundEffectCategories]);
   const [presets, setPresets] = useState<FlowPreset[]>([]);
+  const [savedPlaylists, setSavedPlaylists] = useState<SavedMusicPlaylist[]>([]);
   const [activeId, setActiveId] = useState<string>("");
   const [nodes, setNodes] = useState<FlowNode[]>([]);
   const [presetName, setPresetName] = useState("全天节目流程");
@@ -5444,6 +6296,8 @@ function FlowOrchestrator(props: FlowOrchestratorProps) {
   const [scheduledTime, setScheduledTime] = useState<string>("");
   const [autoFillEnabled, setAutoFillEnabled] = useState(true);
   const [autoFillKeywords, setAutoFillKeywords] = useState("");
+  const [autoFillPlaybackMode, setAutoFillPlaybackMode] = useState<MusicPlaybackMode>("sequential");
+  const [autoFillPlaylistId, setAutoFillPlaylistId] = useState("");
   const [autoFillSongs, setAutoFillSongs] = useState<MusicCandidate[]>([]);
   const [autoFillSearchQuery, setAutoFillSearchQuery] = useState("");
   const [autoFillSearchResults, setAutoFillSearchResults] = useState<MusicCandidate[]>([]);
@@ -5474,9 +6328,19 @@ function FlowOrchestrator(props: FlowOrchestratorProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const loadFlowPlaylists = useCallback(async () => {
+    try {
+      const data = await apiJson<MusicPlaylistsResponse>("/api/music-playlists");
+      setSavedPlaylists(data.playlists);
+    } catch (error) {
+      setAutoFillStatus(`加载自定义歌单失败：${errorMessage(error)}`);
+    }
+  }, []);
+
   useEffect(() => {
-    loadPresets();
-  }, [loadPresets]);
+    void loadPresets();
+    void loadFlowPlaylists();
+  }, [loadFlowPlaylists, loadPresets]);
 
   // 默认播出日期：当天
   useEffect(() => {
@@ -5492,6 +6356,8 @@ function FlowOrchestrator(props: FlowOrchestratorProps) {
     setScheduledTime(preset.scheduledTime ?? "");
     setAutoFillEnabled(preset.autoFillEnabled !== false);
     setAutoFillKeywords(preset.autoFillKeywords ?? "");
+    setAutoFillPlaybackMode(preset.autoFillPlaybackMode === "shuffle" ? "shuffle" : "sequential");
+    setAutoFillPlaylistId(preset.autoFillPlaylistId ?? "");
     setAutoFillSongs(preset.autoFillSongs ?? []);
     setAutoFillSearchQuery(preset.autoFillKeywords ?? "");
     setAutoFillSearchResults([]);
@@ -5514,6 +6380,8 @@ function FlowOrchestrator(props: FlowOrchestratorProps) {
     setScheduledTime("");
     setAutoFillEnabled(true);
     setAutoFillKeywords("");
+    setAutoFillPlaybackMode("sequential");
+    setAutoFillPlaylistId("");
     setAutoFillSongs([]);
     setAutoFillSearchQuery("");
     setAutoFillSearchResults([]);
@@ -5537,32 +6405,38 @@ function FlowOrchestrator(props: FlowOrchestratorProps) {
     setPreviewOpen(true);
   }
 
-  async function savePreset() {
-    setBusy(true);
-    setStatus("正在保存流程…");
-    try {
-      const body = {
+  async function persistCurrentFlowPreset() {
+    const data = await apiJson<FlowPresetResponse>("/api/flow-presets", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
         id: activeId || undefined,
         autoFillEnabled,
         autoFillKeywords: "",
+        autoFillPlaybackMode,
+        autoFillPlaylistId: autoFillPlaylistId || null,
         autoFillSongs,
         name: presetName.trim() || "未命名流程",
         nodes: sortFlowNodes(nodes),
         publishDate,
         scheduledTime: scheduledTime || null,
         enabled,
-      };
-      const data = await apiJson<FlowPresetResponse>("/api/flow-presets", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      setActiveId(data.preset.id);
-      setPresets((current) => {
-        const others = current.filter((item) => item.id !== data.preset.id);
-        return [data.preset, ...others];
-      });
-      setAutoFillTouched(false);
+      }),
+    });
+    setActiveId(data.preset.id);
+    setPresets((current) => {
+      const others = current.filter((item) => item.id !== data.preset.id);
+      return [data.preset, ...others];
+    });
+    setAutoFillTouched(false);
+    return data;
+  }
+
+  async function savePreset() {
+    setBusy(true);
+    setStatus("正在保存流程…");
+    try {
+      const data = await persistCurrentFlowPreset();
       setStatus(data.message);
     } catch (error) {
       setStatus(`保存失败：${errorMessage(error)}`);
@@ -5604,8 +6478,8 @@ function FlowOrchestrator(props: FlowOrchestratorProps) {
         headers: { "Content-Type": "application/json" },
         method: "POST",
       });
-      const result = await apiJson<{ message?: string; songs: MusicCandidate[] }>("/api/plugins/kugou/search", {
-        body: JSON.stringify({ keywords, limit: 18 }),
+      const result = await apiJson<{ message?: string; songs: MusicCandidate[] }>("/api/plugins/music/search", {
+        body: JSON.stringify({ keywords, limit: 18, provider: adminConfig.plugins.kugouMusic.provider }),
         headers: { "Content-Type": "application/json" },
         method: "POST",
       });
@@ -5673,6 +6547,8 @@ function FlowOrchestrator(props: FlowOrchestratorProps) {
         body: JSON.stringify({
           autoFillEnabled,
           autoFillKeywords: "",
+          autoFillPlaybackMode,
+          autoFillPlaylistId: autoFillPlaylistId || null,
           autoFillSongs,
           publishDate: publishDate || localDateKey(),
         }),
@@ -5733,12 +6609,14 @@ function FlowOrchestrator(props: FlowOrchestratorProps) {
     setBusy(true);
     setPreviewOpen(false);
     setRunResult(null);
-    setStatus("正在按流程生成全天节目，请稍候（涉及 TTS，可能需要几分钟）…");
+    setStatus("正在保存当前流程，并自动准备全天节目和音乐连播歌单…");
     try {
-      const data = await apiJson<FlowRunResponse>(`/api/flow-presets/${activeId}/run`, {
+      const saved = await persistCurrentFlowPreset();
+      const runPresetId = saved.preset.id;
+      const data = await apiJson<FlowRunResponse>(`/api/flow-presets/${runPresetId}/run`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ publishDate }),
+        body: JSON.stringify({ publishDate, refreshAutoFillSongs: true }),
       });
       setRunResult(data);
       setStatus(data.running ? flowSummaryMessage(data.summary) : data.message);
@@ -5751,7 +6629,7 @@ function FlowOrchestrator(props: FlowOrchestratorProps) {
 
       for (let attempt = 0; attempt < 240; attempt += 1) {
         await wait(3000);
-        const runData = await apiJson<FlowRunStatusResponse>(`/api/flow-presets/${activeId}/runs`);
+        const runData = await apiJson<FlowRunStatusResponse>(`/api/flow-presets/${runPresetId}/runs`);
         setRunResult({
           summary: runData.summary,
           programs: [],
@@ -5865,6 +6743,7 @@ function FlowOrchestrator(props: FlowOrchestratorProps) {
   const presetMeta = (preset: ProgramPreset) =>
     [
       FLOW_SCHEDULED_KIND_LABEL[preset.type === "custom" ? "custom" : preset.type],
+      preset.type === "custom" ? (preset.contentMode === "direct" ? "原文直出" : "AI 生成") : "",
       preset.categoryId ? programCategories.find((category) => category.id === preset.categoryId)?.name : "",
       preset.playbackSpeed ? `${Number(preset.playbackSpeed).toFixed(2)}x` : "",
       preset.type === "kugou" && preset.songs?.length ? `${preset.songs.length} 首手选歌曲` : "",
@@ -5923,7 +6802,11 @@ function FlowOrchestrator(props: FlowOrchestratorProps) {
         </label>
         <label>
           <span>播出日期</span>
-          <input onChange={(event) => setPublishDate(event.target.value)} type="date" value={publishDate} />
+          <ProgramDateInput
+            hasTodayPrograms={programHistory.some((program) => programTimelineDate(program) === localDateKey())}
+            onChange={setPublishDate}
+            value={publishDate}
+          />
         </label>
         <label>
           <span>每日定时生成</span>
@@ -5944,13 +6827,55 @@ function FlowOrchestrator(props: FlowOrchestratorProps) {
         <div className="flow-section-head">
           <div>
             <h2>音乐连播</h2>
-            <p>歌曲清单已移至左侧“音乐连播”菜单管理；流程页只保存是否启用。</p>
+            <p>生成全天节目时自动准备歌单，也可以固定使用已保存的自定义歌单。</p>
           </div>
-          <span>{autoFillEnabled ? (autoFillSongs.length ? `${autoFillSongs.length} 首` : "待生成") : "已关闭"}</span>
+          <span>{autoFillEnabled ? (autoFillPlaylistId ? `${autoFillSongs.length} 首自定义` : "运行时自动生成") : "已关闭"}</span>
         </div>
-        <p className="flow-hint">
-          当前流程保存后，左侧“音乐连播”页面可用 AI 生成自定义数量歌曲，并手动置顶、上移、下移或删除后立即应用。
-        </p>
+        <div className="flow-filler-settings">
+          <label>
+            <span>歌单来源</span>
+            <select
+              onChange={(event) => {
+                const playlist = savedPlaylists.find((item) => item.id === event.target.value);
+                if (playlist) {
+                  setAutoFillPlaylistId(playlist.id);
+                  setAutoFillSongs(playlist.songs);
+                  setAutoFillPlaybackMode(playlist.playbackMode);
+                  setAutoFillStatus(`已选择自定义歌单「${playlist.name}」：${playlist.songs.length} 首`);
+                } else {
+                  setAutoFillPlaylistId("");
+                  setAutoFillSongs([]);
+                  setAutoFillStatus("将于每次生成全天节目时自动生成音乐连播歌单");
+                }
+                setAutoFillTouched(true);
+              }}
+              value={autoFillPlaylistId}
+            >
+              <option value="">运行流程时自动生成歌单</option>
+              {savedPlaylists.map((playlist) => (
+                <option key={playlist.id} value={playlist.id}>
+                  {playlist.name} · {playlist.songs.length} 首
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>播放方式</span>
+            <select
+              onChange={(event) => {
+                setAutoFillPlaybackMode(event.target.value === "shuffle" ? "shuffle" : "sequential");
+                setAutoFillTouched(true);
+              }}
+              value={autoFillPlaybackMode}
+            >
+              <option value="sequential">顺序播放</option>
+              <option value="shuffle">按日期稳定随机</option>
+            </select>
+          </label>
+        </div>
+        <p className="flow-hint">{autoFillPlaylistId
+          ? "流程会直接应用所选自定义歌单，不会被自动选歌覆盖。"
+          : "无需先到音乐连播页面点击生成；本流程运行时会自动生成、解析并应用歌单。"}</p>
       </section>
 
       <section className="admin-card flow-program-presets">
@@ -6083,7 +7008,9 @@ function FlowOrchestrator(props: FlowOrchestratorProps) {
         <div className="flow-run-summary">
           <span>
             共 {scheduledNodes.length} 个定时节目 · 音乐连播{autoFillEnabled ? "已启用" : "已关闭"}
-            {autoFillEnabled && autoFillSongs.length ? ` · ${autoFillSongs.length} 首` : ""}
+            {autoFillEnabled && autoFillSongs.length
+              ? ` · ${autoFillSongs.length} 首 · ${autoFillPlaybackMode === "shuffle" ? "随机" : "顺序"}`
+              : ""}
           </span>
           <span>播出日期：{publishDate || "未设置"}</span>
           {activePreset?.scheduledTime ? (
@@ -6150,6 +7077,8 @@ function FlowOrchestrator(props: FlowOrchestratorProps) {
       {previewOpen ? (
         <FlowRunPreviewModal
           autoFillEnabled={autoFillEnabled}
+          autoFillPlaylistId={autoFillPlaylistId}
+          autoFillPlaybackMode={autoFillPlaybackMode}
           autoFillSongs={autoFillSongs}
           nodes={sortedNodes}
           publishDate={publishDate || localDateKey()}
@@ -6193,12 +7122,19 @@ function MusicCarouselManager({
   const [publishDate, setPublishDate] = useState(localDateKey());
   const [autoFillEnabled, setAutoFillEnabled] = useState(true);
   const [autoFillKeywords, setAutoFillKeywords] = useState("");
+  const [autoFillProvider, setAutoFillProvider] = useState<MusicProvider>(adminConfig.plugins.kugouMusic.provider);
+  const [autoFillPlaybackMode, setAutoFillPlaybackMode] = useState<MusicPlaybackMode>("sequential");
+  const [autoFillRestartFromBeginning, setAutoFillRestartFromBeginning] = useState(false);
+  const [autoFillPlaylistId, setAutoFillPlaylistId] = useState("");
   const [autoFillSongs, setAutoFillSongs] = useState<MusicCandidate[]>([]);
+  const [sourceMode, setSourceMode] = useState<"automatic" | "custom">("automatic");
+  const [savedPlaylists, setSavedPlaylists] = useState<SavedMusicPlaylist[]>([]);
+  const [playlistName, setPlaylistName] = useState("我的音乐歌单");
   const [autoFillTouched, setAutoFillTouched] = useState(false);
   const [busy, setBusy] = useState(false);
   const [aiGenerateBusy, setAiGenerateBusy] = useState(false);
   const [aiPrompt, setAiPrompt] = useState(defaultAiHotSongPrompt);
-  const [aiSongCount, setAiSongCount] = useState(300);
+  const [aiSongCount, setAiSongCount] = useState(30);
   const [manualSearchQuery, setManualSearchQuery] = useState("");
   const [manualSearchResults, setManualSearchResults] = useState<MusicCandidate[]>([]);
   const [manualSearchBusy, setManualSearchBusy] = useState(false);
@@ -6219,6 +7155,11 @@ function MusicCarouselManager({
     setPublishDate(preset.publishDate || localDateKey());
     setAutoFillEnabled(preset.autoFillEnabled !== false);
     setAutoFillKeywords(preset.autoFillKeywords ?? "");
+    setAutoFillProvider(preset.autoFillProvider ?? adminConfig.plugins.kugouMusic.provider);
+    setAutoFillPlaybackMode(preset.autoFillPlaybackMode === "shuffle" ? "shuffle" : "sequential");
+    setAutoFillRestartFromBeginning(Boolean(preset.autoFillRestartFromBeginning));
+    setAutoFillPlaylistId(preset.autoFillPlaylistId ?? "");
+    setSourceMode(preset.autoFillPlaylistId ? "custom" : "automatic");
     setAutoFillSongs(preset.autoFillSongs ?? []);
     setManualSearchQuery("");
     setManualSearchResults([]);
@@ -6249,24 +7190,135 @@ function MusicCarouselManager({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId]);
 
+  const loadSavedPlaylists = useCallback(async () => {
+    try {
+      const data = await apiJson<MusicPlaylistsResponse>("/api/music-playlists");
+      setSavedPlaylists(data.playlists);
+    } catch (error) {
+      setStatus(`加载自定义歌单失败：${errorMessage(error)}`);
+    }
+  }, []);
+
   useEffect(() => {
     void loadPresets();
+    void loadSavedPlaylists();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    if (!generatedAutoFillSongs.length || autoFillTouched) {
+    const playlist = savedPlaylists.find((item) => item.id === autoFillPlaylistId);
+    if (playlist) {
+      setPlaylistName(playlist.name);
+    }
+  }, [autoFillPlaylistId, savedPlaylists]);
+
+  useEffect(() => {
+    if (!generatedAutoFillSongs.length || autoFillTouched || sourceMode !== "automatic") {
       return;
     }
     setAutoFillSongs(generatedAutoFillSongs);
     setStatus(`已载入 ${publishDate || localDateKey()} 生成好的音乐连播清单：${generatedAutoFillSongs.length} 首`);
-  }, [autoFillTouched, generatedAutoFillSongs, publishDate]);
+  }, [autoFillTouched, generatedAutoFillSongs, publishDate, sourceMode]);
+
+  function selectSavedPlaylist(playlist: SavedMusicPlaylist) {
+    setSourceMode("custom");
+    setAutoFillPlaylistId(playlist.id);
+    setPlaylistName(playlist.name);
+    setAutoFillPlaybackMode(playlist.playbackMode);
+    setAutoFillSongs(playlist.songs);
+    setAutoFillTouched(true);
+    setListSearchQuery("");
+    setStatus(`已载入自定义歌单「${playlist.name}」：${playlist.songs.length} 首，${playlist.playbackMode === "shuffle" ? "随机播放" : "顺序播放"}`);
+  }
+
+  function startNewSavedPlaylist() {
+    setSourceMode("custom");
+    setAutoFillPlaylistId("");
+    setPlaylistName("新建音乐歌单");
+    setAutoFillTouched(true);
+    setStatus("已进入新建歌单模式，当前歌曲不会丢失；修改名称后保存即可另存为新歌单");
+  }
+
+  async function persistSavedPlaylist() {
+    const name = playlistName.trim();
+    if (!name) {
+      throw new Error("请填写歌单名称");
+    }
+    if (!autoFillSongs.length) {
+      throw new Error("歌单中至少需要一首歌曲");
+    }
+    const data = await apiJson<MusicPlaylistResponse>("/api/music-playlists", {
+      body: JSON.stringify({
+        id: autoFillPlaylistId || undefined,
+        name,
+        playbackMode: autoFillPlaybackMode,
+        songs: autoFillSongs,
+      }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    });
+    setSavedPlaylists((current) => [data.playlist, ...current.filter((item) => item.id !== data.playlist.id)]);
+    setAutoFillPlaylistId(data.playlist.id);
+    setPlaylistName(data.playlist.name);
+    setAutoFillPlaybackMode(data.playlist.playbackMode);
+    setAutoFillSongs(data.playlist.songs);
+    setAutoFillTouched(false);
+    return data.playlist;
+  }
+
+  async function saveCustomPlaylist() {
+    if (busy) {
+      return;
+    }
+    setBusy(true);
+    setStatus("正在保存自定义歌单...");
+    try {
+      const playlist = await persistSavedPlaylist();
+      if (activePreset) {
+        await persistCarouselPreset(
+          `自定义歌单「${playlist.name}」和当前流程设置已保存`,
+          playlist.id,
+          playlist.playbackMode,
+          playlist.songs,
+        );
+      } else {
+        setStatus(`自定义歌单「${playlist.name}」已保存：${playlist.songs.length} 首`);
+      }
+    } catch (error) {
+      setStatus(`保存自定义歌单失败：${errorMessage(error)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteCustomPlaylist() {
+    if (!autoFillPlaylistId || busy) {
+      return;
+    }
+    const playlist = savedPlaylists.find((item) => item.id === autoFillPlaylistId);
+    if (!window.confirm(`确定删除歌单「${playlist?.name ?? playlistName}」吗？歌曲本身不会从第三方音乐平台删除。`)) {
+      return;
+    }
+    setBusy(true);
+    try {
+      await apiJson(`/api/music-playlists/${autoFillPlaylistId}`, { method: "DELETE" });
+      setSavedPlaylists((current) => current.filter((item) => item.id !== autoFillPlaylistId));
+      setAutoFillPlaylistId("");
+      setPlaylistName("新建音乐歌单");
+      setAutoFillTouched(true);
+      setStatus("自定义歌单已删除；当前编辑区歌曲仍保留，可另存为新歌单");
+    } catch (error) {
+      setStatus(`删除自定义歌单失败：${errorMessage(error)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function generateAiHotSongs() {
     if (aiGenerateBusy) {
       return;
     }
-    const requestedCount = Math.max(1, Math.min(300, Math.round(Number(aiSongCount) || 300)));
+    const requestedCount = Math.max(1, Math.min(100, Math.round(Number(aiSongCount) || 30)));
     const prompt = aiPrompt.trim() || defaultAiHotSongPrompt;
 
     setAiGenerateBusy(true);
@@ -6279,7 +7331,7 @@ function MusicCarouselManager({
         method: "POST",
       });
       const result = await apiJson<{ message?: string; songs: MusicCandidate[] }>("/api/plugins/kugou/ai-hot-songs", {
-        body: JSON.stringify({ limit: requestedCount, prompt, resolve: false }),
+        body: JSON.stringify({ limit: requestedCount, prompt, provider: autoFillProvider, resolve: false }),
         headers: { "Content-Type": "application/json" },
         method: "POST",
       });
@@ -6309,8 +7361,8 @@ function MusicCarouselManager({
         headers: { "Content-Type": "application/json" },
         method: "POST",
       });
-      const result = await apiJson<{ message?: string; songs: MusicCandidate[] }>("/api/plugins/kugou/search", {
-        body: JSON.stringify({ keywords, limit: 30 }),
+      const result = await apiJson<{ message?: string; songs: MusicCandidate[] }>("/api/plugins/music/search", {
+        body: JSON.stringify({ keywords, limit: 30, provider: autoFillProvider }),
         headers: { "Content-Type": "application/json" },
         method: "POST",
       });
@@ -6336,6 +7388,16 @@ function MusicCarouselManager({
   function removeCarouselSong(index: number) {
     setAutoFillSongs((current) => current.filter((_, itemIndex) => itemIndex !== index));
     setAutoFillTouched(true);
+  }
+
+  function clearCarouselSongs() {
+    if (!autoFillSongs.length || !window.confirm(`确定移除当前播放顺序中的 ${autoFillSongs.length} 首歌曲吗？`)) {
+      return;
+    }
+    setAutoFillSongs([]);
+    setListSearchQuery("");
+    setAutoFillTouched(true);
+    setStatus("当前播放顺序已清空；保存流程或自定义歌单后生效");
   }
 
   function reorderCarouselSong(index: number, direction: -1 | 1) {
@@ -6366,7 +7428,12 @@ function MusicCarouselManager({
     setAutoFillTouched(true);
   }
 
-  async function persistCarouselPreset(message = "音乐连播清单已保存") {
+  async function persistCarouselPreset(
+    message = "音乐连播设置已保存",
+    playlistId = autoFillPlaylistId,
+    playbackMode = autoFillPlaybackMode,
+    songs = autoFillSongs,
+  ) {
     if (!activePreset) {
       setStatus("请先选择一个流程预设");
       return null;
@@ -6376,7 +7443,11 @@ function MusicCarouselManager({
         id: activePreset.id,
         autoFillEnabled,
         autoFillKeywords: "",
-        autoFillSongs,
+        autoFillProvider,
+        autoFillRestartFromBeginning,
+        autoFillPlaybackMode: playbackMode,
+        autoFillPlaylistId: playlistId || null,
+        autoFillSongs: songs,
         name: activePreset.name || "全天节目流程",
         nodes: sortFlowNodes(activePreset.nodes ?? []),
         publishDate: publishDate || localDateKey(),
@@ -6391,17 +7462,33 @@ function MusicCarouselManager({
       return [data.preset, ...others];
     });
     setActiveId(data.preset.id);
+    setAutoFillPlaybackMode(data.preset.autoFillPlaybackMode === "shuffle" ? "shuffle" : playbackMode);
+    setAutoFillPlaylistId(data.preset.autoFillPlaylistId ?? playlistId);
     setAutoFillTouched(false);
-    setStatus(`${message}：${autoFillSongs.length} 首`);
+    setStatus(`${message}：${songs.length} 首`);
     return data.preset;
   }
 
-  async function saveCarouselSongs() {
+  async function saveCarouselSettings() {
+    if (!activePreset || busy) {
+      setStatus(activePreset ? status : "请先选择一个流程预设");
+      return;
+    }
+    if (sourceMode === "custom" && !autoFillPlaylistId) {
+      setStatus("当前是新建自定义歌单，请先保存歌单再保存流程设置");
+      return;
+    }
     setBusy(true);
+    setStatus("正在保存音乐连播流程设置...");
     try {
-      await persistCarouselPreset();
+      await persistCarouselPreset(
+        sourceMode === "custom" ? "自定义歌单已绑定到流程" : "自动生成歌单已设为流程默认来源",
+        sourceMode === "custom" ? autoFillPlaylistId : "",
+        autoFillPlaybackMode,
+        sourceMode === "custom" ? autoFillSongs : [],
+      );
     } catch (error) {
-      setStatus(`保存失败：${errorMessage(error)}`);
+      setStatus(`保存流程设置失败：${errorMessage(error)}`);
     } finally {
       setBusy(false);
     }
@@ -6418,9 +7505,25 @@ function MusicCarouselManager({
     }
 
     setBusy(true);
-    setStatus("正在保存并应用音乐连播清单...");
+    setStatus(sourceMode === "custom" ? "正在保存自定义歌单并应用到直播..." : "正在生成自动歌单并应用到直播...");
     try {
-      const savedPreset = await persistCarouselPreset("音乐连播清单已保存，正在应用到直播");
+      let playlistId = "";
+      let playbackMode = autoFillPlaybackMode;
+      let songs = sourceMode === "automatic" ? [] : autoFillSongs;
+      let sourceLabel = "自动生成歌单";
+      if (sourceMode === "custom") {
+        const savedPlaylist = await persistSavedPlaylist();
+        playlistId = savedPlaylist.id;
+        playbackMode = savedPlaylist.playbackMode;
+        songs = savedPlaylist.songs;
+        sourceLabel = `自定义歌单「${savedPlaylist.name}」`;
+      }
+      const savedPreset = await persistCarouselPreset(
+        `${sourceLabel}设置已保存，正在应用到直播`,
+        playlistId,
+        playbackMode,
+        songs,
+      );
       if (!savedPreset) {
         return;
       }
@@ -6428,7 +7531,11 @@ function MusicCarouselManager({
         body: JSON.stringify({
           autoFillEnabled,
           autoFillKeywords: "",
-          autoFillSongs,
+          autoFillProvider,
+          autoFillRestartFromBeginning,
+          autoFillPlaybackMode: playbackMode,
+          autoFillPlaylistId: playlistId || null,
+          autoFillSongs: songs,
           publishDate: publishDate || localDateKey(),
         }),
         headers: { "Content-Type": "application/json" },
@@ -6436,6 +7543,11 @@ function MusicCarouselManager({
       });
       const nextSongs = data.songs?.length ? data.songs : data.preset.autoFillSongs ?? autoFillSongs;
       setAutoFillSongs(nextSongs);
+      setAutoFillPlaybackMode(data.preset.autoFillPlaybackMode === "shuffle" ? "shuffle" : "sequential");
+      setAutoFillProvider(data.preset.autoFillProvider ?? autoFillProvider);
+      setAutoFillRestartFromBeginning(Boolean(data.preset.autoFillRestartFromBeginning));
+      setAutoFillPlaylistId(data.preset.autoFillPlaylistId ?? playlistId);
+      setSourceMode(data.preset.autoFillPlaylistId ? "custom" : "automatic");
       setPresets((current) => {
         const others = current.filter((preset) => preset.id !== data.preset.id);
         return [data.preset, ...others];
@@ -6473,13 +7585,13 @@ function MusicCarouselManager({
           <p>{status}</p>
         </div>
         <div className="flow-toolbar">
-          <button disabled={busy || !activePreset} onClick={saveCarouselSongs} type="button">
+          <button disabled={busy || !activePreset} onClick={saveCarouselSettings} type="button">
             {busy ? <Loader2 className="spin-icon" size={16} /> : <Save size={16} />}
-            <span>保存清单</span>
+            <span>保存流程设置</span>
           </button>
           <button className="admin-primary-button" disabled={busy || !activePreset || !autoFillEnabled} onClick={applyCarouselSongs} type="button">
             {busy ? <Loader2 className="spin-icon" size={16} /> : <RefreshCw size={16} />}
-            <span>保存并立即应用</span>
+            <span>{sourceMode === "automatic" ? "生成并立即应用" : "保存歌单并应用"}</span>
           </button>
         </div>
       </div>
@@ -6488,13 +7600,23 @@ function MusicCarouselManager({
         <AdminMetric label="清单歌曲" value={String(autoFillSongs.length)} />
         <AdminMetric label="可播放" value={String(playableCount)} />
         <AdminMetric label="预计时长" value={formatDuration(totalDurationSeconds)} />
-        <AdminMetric label="直播生成" value={currentAutoFillProgram ? "已生成" : "未生成"} />
+        <AdminMetric label="播放模式" value={autoFillPlaybackMode === "shuffle" ? "随机" : "顺序"} />
+        <AdminMetric label="已存歌单" value={String(savedPlaylists.length)} />
+        <AdminMetric label="歌单来源" value={sourceMode === "custom" ? "自定义" : "自动生成"} />
       </div>
 
-      <section className="admin-card filler-control-card">
-        <div className="filler-control-grid">
-          <label>
-            <span>流程预设</span>
+      <section className="admin-card filler-setup-card">
+        <div className="flow-section-head">
+          <div>
+            <h2>运行设置</h2>
+            <p>先绑定流程和日期，再明确选择自动生成或自定义歌单。</p>
+          </div>
+          <span>{autoFillEnabled ? "音乐连播已启用" : "音乐连播已关闭"}</span>
+        </div>
+
+        <div className="filler-workflow-grid">
+          <label className="filler-step-field">
+            <strong><i>1</i>绑定全天流程</strong>
             <select
               onChange={(event) => {
                 const preset = presets.find((item) => item.id === event.target.value);
@@ -6511,12 +7633,66 @@ function MusicCarouselManager({
                 </option>
               ))}
             </select>
+            <small>音乐连播会填充这套流程中没有定时节目的时段。</small>
           </label>
-          <label>
-            <span>播出日期</span>
-            <input onChange={(event) => setPublishDate(event.target.value)} type="date" value={publishDate} />
+          <label className="filler-step-field">
+            <strong><i>2</i>选择播出日期</strong>
+            <ProgramDateInput
+              hasTodayPrograms={programHistory.some((program) => programTimelineDate(program) === localDateKey())}
+              onChange={setPublishDate}
+              value={publishDate}
+            />
+            <small>立即应用时只更新这个日期的音乐连播节目。</small>
           </label>
-          <label className="flow-check filler-enable-check">
+          <label className="filler-step-field">
+            <strong><i>3</i>选择音乐来源</strong>
+            <select
+              onChange={(event) => {
+                setAutoFillProvider(event.target.value as MusicProvider);
+                setManualSearchResults([]);
+                setAutoFillTouched(true);
+                setStatus(`音乐连播将按${musicProviderLabel(event.target.value)}生成和搜索歌曲`);
+              }}
+              value={autoFillProvider}
+            >
+              <option value="auto">智能混合（推荐）</option>
+              <option value="kugou">仅酷狗音乐</option>
+              <option value="netease">仅网易云音乐</option>
+              <option value="qq">仅 QQ 音乐</option>
+            </select>
+            <small>自动生成、手动搜索和全天流程都会遵守这里保存的来源。</small>
+          </label>
+          <label className="filler-step-field">
+            <strong><i>4</i>设置播放方式</strong>
+            <select
+              onChange={(event) => {
+                setAutoFillPlaybackMode(event.target.value === "shuffle" ? "shuffle" : "sequential");
+                setAutoFillTouched(true);
+              }}
+              value={autoFillPlaybackMode}
+            >
+              <option value="sequential">按清单顺序播放</option>
+              <option value="shuffle">按日期稳定随机播放</option>
+            </select>
+            <small>随机顺序当天保持稳定，刷新页面不会重新打乱。</small>
+          </label>
+          {autoFillPlaybackMode === "sequential" ? (
+            <label className="flow-check filler-enable-check filler-step-toggle">
+              <input
+                checked={autoFillRestartFromBeginning}
+                onChange={(event) => {
+                  setAutoFillRestartFromBeginning(event.target.checked);
+                  setAutoFillTouched(true);
+                }}
+                type="checkbox"
+              />
+              <span>
+                <strong>应用或推送时从第一首开始</strong>
+                <small>保存歌单并应用，或在播出排期点击“立即推送”时，顺序歌单会重置到第一首。</small>
+              </span>
+            </label>
+          ) : null}
+          <label className="flow-check filler-enable-check filler-step-toggle">
             <input
               checked={autoFillEnabled}
               onChange={(event) => {
@@ -6525,37 +7701,123 @@ function MusicCarouselManager({
               }}
               type="checkbox"
             />
-            <span>启用空闲时段音乐连播</span>
+            <span><strong>启用空闲时段音乐连播</strong><small>关闭后流程只生成定时节目。</small></span>
           </label>
+        </div>
+
+        <div className="filler-source-options" aria-label="歌单来源">
+          <button
+            className={sourceMode === "automatic" ? "is-selected" : ""}
+            onClick={() => {
+              setSourceMode("automatic");
+              setAutoFillPlaylistId("");
+              setAutoFillSongs(generatedAutoFillSongs);
+              setAutoFillTouched(true);
+              setStatus("已选择自动生成：每次生成全天节目时会自动准备新的音乐连播歌单");
+            }}
+            type="button"
+          >
+            <WandSparkles size={21} />
+            <span><strong>流程运行时自动生成</strong><small>无需提前生成歌单；每次全天流程运行时自动准备歌曲。</small></span>
+          </button>
+          <button
+            className={sourceMode === "custom" ? "is-selected" : ""}
+            onClick={() => {
+              const firstPlaylist = savedPlaylists[0];
+              if (firstPlaylist) {
+                selectSavedPlaylist(firstPlaylist);
+              } else {
+                startNewSavedPlaylist();
+              }
+            }}
+            type="button"
+          >
+            <ListMusic size={21} />
+            <span><strong>使用保存的自定义歌单</strong><small>固定使用你维护的歌曲和顺序，不会被自动生成覆盖。</small></span>
+          </button>
+        </div>
+
+        {sourceMode === "custom" ? (
+          <div className="filler-custom-source">
+            <label>
+              <span>选择自定义歌单</span>
+              <select
+                onChange={(event) => {
+                  const playlist = savedPlaylists.find((item) => item.id === event.target.value);
+                  if (playlist) {
+                    selectSavedPlaylist(playlist);
+                  } else {
+                    startNewSavedPlaylist();
+                  }
+                }}
+                value={autoFillPlaylistId}
+              >
+                <option value="">— 新建自定义歌单 —</option>
+                {savedPlaylists.map((playlist) => (
+                  <option key={playlist.id} value={playlist.id}>
+                    {playlist.name} · {playlist.songs.length} 首 · {playlist.playbackMode === "shuffle" ? "随机" : "顺序"}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>歌单名称</span>
+              <input
+                onChange={(event) => {
+                  setPlaylistName(event.target.value);
+                  setAutoFillTouched(true);
+                }}
+                placeholder="例如：深夜华语精选"
+                value={playlistName}
+              />
+            </label>
+            <div className="filler-playlist-library-actions">
+              <button disabled={busy || !autoFillSongs.length || !playlistName.trim()} onClick={saveCustomPlaylist} type="button">
+                <Save size={16} /><span>保存此歌单</span>
+              </button>
+              <button onClick={startNewSavedPlaylist} type="button">
+                <Plus size={16} /><span>新建歌单</span>
+              </button>
+              <button disabled={!autoFillPlaylistId || busy} className="is-danger" onClick={deleteCustomPlaylist} type="button">
+                <Trash2 size={16} /><span>删除当前歌单</span>
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="filler-auto-note">
+            <WandSparkles size={19} />
+            <span><strong>全自动模式 · {musicProviderLabel(autoFillProvider)}</strong><small>保存设置后，生成全天节目会严格按这里选择的音乐来源准备歌单；下方清单仅用于预览和手动微调。</small></span>
+          </div>
+        )}
+      </section>
+
+      <section className="admin-card filler-builder-card">
+        <div className="flow-section-head">
+          <div>
+            <h2>歌单编辑器</h2>
+            <p>AI 助手默认生成 30 首，并在应用时按“{musicProviderLabel(autoFillProvider)}”解析歌曲；也可以手动搜索、排序和删除。</p>
+          </div>
+          <span>{autoFillSongs.length} 首</span>
         </div>
         <div className="filler-control-actions">
           <label className="filler-ai-prompt">
-            <span>AI 生成提示词</span>
-            <textarea
-              onChange={(event) => setAiPrompt(event.target.value)}
-              rows={3}
-              value={aiPrompt}
-            />
+            <span>AI 选歌要求</span>
+            <textarea onChange={(event) => setAiPrompt(event.target.value)} rows={3} value={aiPrompt} />
           </label>
           <label className="filler-ai-count">
             <span>生成数量</span>
             <input
-              max={300}
+              max={100}
               min={1}
               onChange={(event) => {
                 const value = Number(event.target.value);
-                setAiSongCount(Number.isFinite(value) ? Math.max(1, Math.min(300, Math.round(value))) : 300);
+                setAiSongCount(Number.isFinite(value) ? Math.max(1, Math.min(100, Math.round(value))) : 30);
               }}
               type="number"
               value={aiSongCount}
             />
           </label>
-          <button
-            className="admin-primary-button"
-            disabled={aiGenerateBusy || busy || !activePreset}
-            onClick={generateAiHotSongs}
-            type="button"
-          >
+          <button className="admin-primary-button" disabled={aiGenerateBusy || busy} onClick={generateAiHotSongs} type="button">
             {aiGenerateBusy ? <Loader2 className="spin-icon" size={17} /> : <WandSparkles size={17} />}
             <span>{aiGenerateBusy ? "AI 生成中" : `AI 生成 ${aiSongCount} 首`}</span>
           </button>
@@ -6570,7 +7832,7 @@ function MusicCarouselManager({
               type="button"
             >
               <ListMusic size={17} />
-              <span>重新载入当天已生成清单（{generatedAutoFillSongs.length} 首）</span>
+              <span>载入当天已播清单（{generatedAutoFillSongs.length} 首）</span>
             </button>
           ) : null}
         </div>
@@ -6605,14 +7867,14 @@ function MusicCarouselManager({
             {manualSearchResults.length ? (
               manualSearchResults.map((song) => (
                 <button
-                  key={`${song.hash ?? song.albumAudioId ?? song.title}-${song.artist ?? ""}`}
+                  key={songKey(song)}
                   onClick={() => addCarouselSong(song)}
                   type="button"
                 >
                   {song.coverUrl ? <img alt="" src={song.coverUrl} /> : <span className="filler-song-cover"><ListMusic size={18} /></span>}
                   <span>
                     <b>{song.title}</b>
-                    <small>{song.artist || "未知歌手"}{song.duration ? ` · ${formatDuration(song.duration)}` : ""}</small>
+                    <small>{song.artist || "未知歌手"} · {musicProviderLabel(song.source)}{song.duration ? ` · ${formatDuration(song.duration)}` : ""}</small>
                   </span>
                   <ArrowUpToLine size={17} />
                 </button>
@@ -6640,6 +7902,10 @@ function MusicCarouselManager({
                 value={listSearchQuery}
               />
             </label>
+            <button className="is-danger filler-clear-list" disabled={!autoFillSongs.length} onClick={clearCarouselSongs} type="button">
+              <Trash2 size={16} />
+              <span>一键移除全部</span>
+            </button>
           </div>
           <div className="filler-song-table" role="table" aria-label="音乐连播歌曲清单">
             <div className="filler-song-row filler-song-row--head" role="row">
@@ -6652,11 +7918,11 @@ function MusicCarouselManager({
             <div className="filler-song-scroll">
               {filteredAutoFillSongs.length ? (
                 filteredAutoFillSongs.map(({ song, index }) => (
-                  <div className="filler-song-row" key={`${song.hash ?? song.albumAudioId ?? song.title}-${index}`} role="row">
+                  <div className="filler-song-row" key={`${songKey(song)}-${index}`} role="row">
                     <span className="filler-song-number">{String(index + 1).padStart(3, "0")}</span>
                     <span className="filler-song-title">
                       <strong>{song.title}</strong>
-                      <small>{song.audioUrl ? "可播放" : song.hash ? "待应用解析" : "待搜索解析"}</small>
+                      <small>{musicProviderLabel(song.source)} · {song.audioUrl ? "可播放" : song.hash || song.sourceId ? "待应用解析" : "待搜索解析"}</small>
                     </span>
                     <span>{song.artist || "未知歌手"}</span>
                     <span>{song.duration ? formatDuration(song.duration) : "--:--"}</span>
@@ -6736,7 +8002,7 @@ function FlowNodeEditor(props: {
             >
               <option value="preset">预设节目</option>
               <option value="existing">引用已有节目</option>
-              <option value="custom">自定义 AI 节目</option>
+              <option value="custom">自定义节目</option>
               <option value="daily-briefing">每日早报</option>
               <option value="hot-topics">今日热榜</option>
               <option value="kugou">音乐联播</option>
@@ -6963,6 +8229,8 @@ function AdminLoginPage({
 
 function FlowRunPreviewModal({
   autoFillEnabled,
+  autoFillPlaylistId,
+  autoFillPlaybackMode,
   autoFillSongs,
   nodes,
   onClose,
@@ -6970,6 +8238,8 @@ function FlowRunPreviewModal({
   publishDate,
 }: {
   autoFillEnabled: boolean;
+  autoFillPlaylistId: string;
+  autoFillPlaybackMode: MusicPlaybackMode;
   autoFillSongs: MusicCandidate[];
   nodes: FlowNode[];
   onClose: () => void;
@@ -7006,7 +8276,11 @@ function FlowRunPreviewModal({
               <span>空闲</span>
               <div>
                 <strong>音乐连播</strong>
-                <small>{autoFillSongs.length ? `${autoFillSongs.length} 首手选歌曲，按顺序播放` : "尚未生成歌曲清单"}</small>
+                <small>
+                  {autoFillPlaylistId
+                    ? `${autoFillSongs.length} 首自定义歌曲，${autoFillPlaybackMode === "shuffle" ? "随机播放" : "顺序播放"}`
+                    : "运行流程时会自动生成并应用歌曲清单"}
+                </small>
               </div>
             </article>
           ) : null}
@@ -7047,8 +8321,12 @@ function AdminShell(props: AdminShellProps) {
   const serviceHealth = (service: "llm" | "tts" | "suno") => {
     const config = adminConfig[service];
     const status = configTestStatus[service];
-    const missingApiKey = service === "tts" && ttsApiKeyOptional(adminConfig.tts) ? false : !String(config.apiKey ?? "").trim();
-    const missingEndpoint = service === "tts" && adminConfig.tts.engine === "local" ? false : !String(config.baseUrl ?? "").trim();
+    const missingApiKey = service === "suno"
+      ? !String(adminConfig.suno.cookie ?? "").trim()
+      : service === "tts" && ttsApiKeyOptional(adminConfig.tts)
+        ? false
+        : !String((config as LlmConfig | TtsConfig).apiKey ?? "").trim();
+    const missingEndpoint = !String(config.baseUrl ?? "").trim();
     const missingConfig =
       missingEndpoint ||
       missingApiKey ||
@@ -7056,19 +8334,67 @@ function AdminShell(props: AdminShellProps) {
       !config.enabled;
     return missingConfig || /失败|缺少|异常|停用/u.test(status) ? "bad" : "good";
   };
-  const menu: Array<{ icon: React.ReactNode; id: AdminSection; label: string }> = [
-    { icon: <Database size={19} />, id: "dashboard", label: "运营概览" },
-    { icon: <WandSparkles size={19} />, id: "studio", label: "节目制作" },
-    { icon: <CalendarDays size={19} />, id: "timeline", label: "节目编排" },
-    { icon: <ListMusic size={19} />, id: "filler", label: "音乐连播" },
-    { icon: <Archive size={19} />, id: "archive", label: "节目归档" },
-    { icon: <Disc3 size={19} />, id: "music", label: "音乐点播" },
-    { icon: <FileAudio size={19} />, id: "effects", label: "音效管理" },
-    { icon: <HardDrive size={19} />, id: "storage", label: "附件管理" },
-    { icon: <ShieldCheck size={19} />, id: "system", label: "系统设置" },
-    { icon: <ServerCog size={19} />, id: "settings", label: "接口配置" },
-    { icon: <Puzzle size={19} />, id: "plugins", label: "采集插件" },
+  const menuGroups: Array<{
+    label: string;
+    items: Array<{ icon: React.ReactNode; id: AdminSection; label: string }>;
+  }> = [
+    {
+      label: "工作台",
+      items: [
+        { icon: <Database size={19} />, id: "dashboard", label: "运营概览" },
+        { icon: <Radio size={19} />, id: "flow", label: "全天流程" },
+      ],
+    },
+    {
+      label: "节目运营",
+      items: [
+        { icon: <WandSparkles size={19} />, id: "studio", label: "节目制作" },
+        { icon: <CalendarDays size={19} />, id: "timeline", label: "播出排期" },
+        { icon: <ListMusic size={19} />, id: "filler", label: "音乐连播" },
+      ],
+    },
+    {
+      label: "内容资源",
+      items: [
+        { icon: <Disc3 size={19} />, id: "music", label: "点播节目" },
+        { icon: <Archive size={19} />, id: "archive", label: "节目归档" },
+        { icon: <FileAudio size={19} />, id: "effects", label: "音效素材" },
+        { icon: <HardDrive size={19} />, id: "storage", label: "附件存储" },
+      ],
+    },
+    {
+      label: "系统配置",
+      items: [
+        { icon: <BrainCircuit size={19} />, id: "settings", label: "模型配置" },
+        { icon: <ServerCog size={19} />, id: "plugins", label: "接口 API" },
+        { icon: <ShieldCheck size={19} />, id: "system", label: "站点设置" },
+      ],
+    },
   ];
+  const currentMenu = menuGroups.flatMap((group) => group.items).find((item) => item.id === adminSection);
+  const [showGuide, setShowGuide] = useState(() => window.localStorage.getItem(ADMIN_GUIDE_DISMISSED_KEY) !== "1");
+  const [guideDismissed, setGuideDismissed] = useState(false);
+  const closeGuide = () => {
+    if (guideDismissed) {
+      window.localStorage.setItem(ADMIN_GUIDE_DISMISSED_KEY, "1");
+    } else {
+      window.localStorage.removeItem(ADMIN_GUIDE_DISMISSED_KEY);
+    }
+    setShowGuide(false);
+  };
+  const openGuide = () => {
+    setGuideDismissed(window.localStorage.getItem(ADMIN_GUIDE_DISMISSED_KEY) === "1");
+    setShowGuide(true);
+  };
+  const jumpFromGuide = (section: AdminSection) => {
+    if (guideDismissed) {
+      window.localStorage.setItem(ADMIN_GUIDE_DISMISSED_KEY, "1");
+    } else {
+      window.localStorage.removeItem(ADMIN_GUIDE_DISMISSED_KEY);
+    }
+    setShowGuide(false);
+    onSectionChange(section);
+  };
 
   return (
     <div className="admin-shell">
@@ -7081,16 +8407,21 @@ function AdminShell(props: AdminShellProps) {
           </span>
         </button>
         <nav className="admin-menu" aria-label="后台管理菜单">
-          {menu.map((item) => (
-            <button
-              className={adminSection === item.id ? "is-active" : ""}
-              key={item.id}
-              onClick={() => onSectionChange(item.id)}
-              type="button"
-            >
-              {item.icon}
-              <span>{item.label}</span>
-            </button>
+          {menuGroups.map((group) => (
+            <div className="admin-menu-group" key={group.label}>
+              <small>{group.label}</small>
+              {group.items.map((item) => (
+                <button
+                  className={adminSection === item.id ? "is-active" : ""}
+                  key={item.id}
+                  onClick={() => onSectionChange(item.id)}
+                  type="button"
+                >
+                  {item.icon}
+                  <span>{item.label}</span>
+                </button>
+              ))}
+            </div>
           ))}
         </nav>
         <div className="admin-sidebar-footer">
@@ -7104,11 +8435,15 @@ function AdminShell(props: AdminShellProps) {
       <main className="admin-main">
         <header className="admin-main-header">
           <div>
-            <strong>后台管理中心</strong>
-            <small>{backendStatus}</small>
+            <strong>{currentMenu?.label ?? "后台管理中心"}</strong>
+            <small>后台管理中心 · {backendStatus}</small>
           </div>
           <div className="admin-header-actions">
             <span>{adminUser || "管理员"}</span>
+            <button onClick={openGuide} type="button">
+              <CircleHelp size={17} />
+              操作指引
+            </button>
             <button onClick={() => (window.location.href = "/")} type="button">
               前台预览
             </button>
@@ -7153,7 +8488,7 @@ function AdminShell(props: AdminShellProps) {
                 {generatedProgram ? (
                   <div className="admin-current-program">
                     <strong>{generatedProgram.title}</strong>
-                    <small>{generatedProgram.host} · {generatedProgram.status === "ready" ? "语音已生成" : "仅文案"}</small>
+                    <small>{generatedProgram.host} · {generatedProgram.status === "ready" ? "语音已生成" : generatedProgram.status === "generating" ? "后台生成中" : generatedProgram.status === "failed" ? "生成失败" : "仅文案"}</small>
                     {generatedProgram.audioUrl ? <audio controls src={generatedProgram.audioUrl} /> : null}
                   </div>
                 ) : (
@@ -7161,10 +8496,19 @@ function AdminShell(props: AdminShellProps) {
                 )}
               </section>
             </div>
+            <section className="admin-card admin-quick-actions">
+              <h2>常用操作</h2>
+              <div>
+                <button onClick={() => onSectionChange("studio")} type="button"><WandSparkles size={18} /><span>制作节目</span></button>
+                <button onClick={() => onSectionChange("flow")} type="button"><Radio size={18} /><span>编排全天流程</span></button>
+                <button onClick={() => onSectionChange("filler")} type="button"><ListMusic size={18} /><span>维护音乐歌单</span></button>
+                <button onClick={() => onSectionChange("plugins")} type="button"><ServerCog size={18} /><span>检查接口 API</span></button>
+              </div>
+            </section>
           </section>
         ) : null}
 
-        {adminSection === "dashboard" ? (
+        {adminSection === "flow" ? (
           <FlowOrchestrator
             adminConfig={adminConfig}
             programCategories={programCategories}
@@ -7203,6 +8547,161 @@ function AdminShell(props: AdminShellProps) {
         ) : null}
         {adminSection === "plugins" ? <AdminPluginPage {...props} /> : null}
       </main>
+      {showGuide ? (
+        <AdminGuideModal
+          dismissed={guideDismissed}
+          onDismissedChange={setGuideDismissed}
+          onClose={closeGuide}
+          onJump={jumpFromGuide}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function AdminGuideModal({
+  dismissed,
+  onClose,
+  onDismissedChange,
+  onJump,
+}: {
+  dismissed: boolean;
+  onClose: () => void;
+  onDismissedChange: (value: boolean) => void;
+  onJump: (section: AdminSection) => void;
+}) {
+  const steps: Array<{
+    actionLabel: string;
+    description: string;
+    id: string;
+    section: AdminSection;
+    title: string;
+    tips: string[];
+  }> = [
+    {
+      actionLabel: "配置模型",
+      description: "先在“模型配置”完成大模型、通用语音和 Suno 三组配置，再到“接口 API”维护早报、热榜和三种音乐 API 连接。",
+      id: "config",
+      section: "settings",
+      title: "1. 完成模型与接口配置",
+      tips: [
+        "模型配置分三个标签页：大模型生成节目脚本与歌单、通用语音负责配音、Suno 负责 AI 原创音乐。",
+        "通用语音用于把节目文案转换为音频；本机语音仅适合作为临时兜底。",
+        "Suno 需要填写账号 Cookie，并在“接口 API → 本地 suno-api”配置 2Captcha API Key 以通过 hCaptcha。",
+        "每日早报、今日热榜和酷狗、网易云、QQ 音乐的连接凭据统一放在“接口 API”，节目业务参数在节目制作维护。",
+      ],
+    },
+    {
+      actionLabel: "进入节目制作",
+      description: "在节目制作页先生成单条节目，确认脚本、主播、音色、背景音和语速都符合预期。",
+      id: "studio",
+      section: "studio",
+      title: "2. 制作并校验单条节目",
+      tips: [
+        "选择节目类型：自定义节目、每日早报、今日热榜、音乐连播、Suno AI 音乐或点播节目。",
+        "点播节目支持直链音频、视频音轨、HLS 地址和 yt-dlp 可解析的播放页面，长内容可保存后后台转码。",
+        "填写节目标题、播出时间、主题提示词，选择一个或多个 AI 主播。",
+        "生成后先试听音频；必要时修改文案，再点“重新生成语音”，正常后再保存为节目预设。",
+      ],
+    },
+    {
+      actionLabel: "查看音乐连播",
+      description: "保存一份命名歌单并选择顺序或随机模式，再把它应用到空闲时段连播。",
+      id: "filler",
+      section: "filler",
+      title: "3. 准备音乐连播",
+      tips: [
+        "流程里的空闲时段会由“音乐连播”补齐，不必把每个小时都做成口播节目。",
+        "自定义歌单会严格使用保存内容；顺序模式按表格次序播放，随机模式按播出日期稳定洗牌。",
+        "如果某首歌无播放链接，可在音乐连播或节目列表中替换、删除或重新搜索。",
+      ],
+    },
+    {
+      actionLabel: "开始流程编排",
+      description: "在独立的“全天流程”页面，把早报、热榜、自定义节目和音乐连播组成一天的播出结构。",
+      id: "flow",
+      section: "flow",
+      title: "4. 编排全天流程",
+      tips: [
+        "新建流程预设，设置名称、目标日期和每天自动生成时间，例如 03:00。",
+        "添加定时节点：早报通常放在清晨，热榜可放在午间或傍晚，自定义节目用于固定栏目。",
+        "启用自动补齐音乐连播，让未安排口播的时间段自动播放歌曲。",
+        "保存后点“预览全天节目”，确认节点顺序、空档和生成数量。",
+      ],
+    },
+    {
+      actionLabel: "进入播出排期",
+      description: "生成完成后，到播出排期页面检查当天节目队列，调整时间、顺序、分类并发布。",
+      id: "timeline",
+      section: "timeline",
+      title: "5. 检查、发布与归档",
+      tips: [
+        "选择当天日期，确认节目都已生成，状态为可播，音频能正常试听。",
+        "手动保存时间线后，点击发布，让前台按当天节目队列播放。",
+        "发布后可到前台预览，检查当前直播、节目预告、今日已播和字幕显示。",
+        "必要时同步节目归档，方便后续按日期回看或清理。",
+      ],
+    },
+    {
+      actionLabel: "查看附件",
+      description: "生成失败时优先看运行进度和失败节点，再检查接口、音频附件和存储空间。",
+      id: "troubleshoot",
+      section: "storage",
+      title: "6. 失败排查顺序",
+      tips: [
+        "流程卡住时先看进度卡片：当前节点、已处理数量、耗时和失败提示。",
+        "0/4 长时间不动通常是接口未配置、后台任务异常或前一个运行状态未正确结束。",
+        "TTS 失败先检查语音接口配置；音乐失败先检查所选平台 Cookie、版权状态和歌曲播放链接。",
+        "生成音频很多时，到附件管理清理未引用文件，避免磁盘占满。",
+      ],
+    },
+  ];
+
+  return (
+    <div className="admin-guide-backdrop" role="presentation">
+      <section aria-modal="true" className="admin-guide-modal" role="dialog" aria-labelledby="admin-guide-title">
+        <header className="admin-guide-head">
+          <span>后台操作指引</span>
+          <h2 id="admin-guide-title">从节目制作到全天流程编排</h2>
+          <p>按下面顺序操作：先完成模型与接口配置，再跑通单条节目，保存预设并编排全天流程，最后检查时间线和前台播放。</p>
+        </header>
+
+        <div className="admin-guide-flow">
+          {steps.map((step) => (
+            <article className="admin-guide-step" key={step.id}>
+              <div>
+                <strong>{step.title}</strong>
+                <p>{step.description}</p>
+                <ul>
+                  {step.tips.map((tip) => (
+                    <li key={tip}>{tip}</li>
+                  ))}
+                </ul>
+              </div>
+              <button onClick={() => onJump(step.section)} type="button">
+                {step.actionLabel}
+              </button>
+            </article>
+          ))}
+        </div>
+
+        <div className="admin-guide-checklist">
+          <strong>上线前快速检查</strong>
+          <span>接口测试通过</span>
+          <span>单条节目可试听</span>
+          <span>流程预览无空档异常</span>
+          <span>定时任务已启用</span>
+          <span>前台预览能播放</span>
+        </div>
+
+        <footer className="admin-guide-actions">
+          <label>
+            <input checked={dismissed} onChange={(event) => onDismissedChange(event.target.checked)} type="checkbox" />
+            <span>不再自动提示</span>
+          </label>
+          <button onClick={onClose} type="button">关闭</button>
+        </footer>
+      </section>
     </div>
   );
 }
@@ -7216,8 +8715,50 @@ function AdminMetric({ label, value }: { label: string; value: string }) {
   );
 }
 
+function ProgramDateInput({
+  hasTodayPrograms,
+  onChange,
+  value,
+}: {
+  hasTodayPrograms: boolean;
+  onChange: (value: string) => void;
+  value: string;
+}) {
+  const today = localDateKey();
+  return (
+    <span className={`program-date-input ${hasTodayPrograms ? "has-today-programs" : ""} ${value === today && hasTodayPrograms ? "is-today" : ""}`}>
+      <input onChange={(event) => onChange(event.target.value)} type="date" value={value} />
+      {hasTodayPrograms ? <em><i />今日有节目</em> : null}
+    </span>
+  );
+}
+
+function StudioApiReference({
+  description,
+  enabled,
+  name,
+  onOpen,
+}: {
+  description: string;
+  enabled: boolean;
+  name: string;
+  onOpen: () => void;
+}) {
+  return (
+    <div className="studio-api-reference">
+      <span className={`status-dot status-dot--${enabled ? "good" : "bad"}`} />
+      <div>
+        <strong>{name}</strong>
+        <p>{description}</p>
+      </div>
+      <button onClick={onOpen} type="button">前往接口 API</button>
+    </div>
+  );
+}
+
 function AdminStudioPage({
   adminConfig,
+  customContentMode,
   dailyBriefingBusy,
   generatedProgram,
   hotTopicsBusy,
@@ -7234,6 +8775,7 @@ function AdminStudioPage({
   manualMusicSearchBusy,
   manualMusicSelected,
   manualMusicStatus,
+  mediaProgramBusy,
   onAdminConfigChange,
   onAdminConfigSave,
   onDeleteProgram,
@@ -7243,7 +8785,6 @@ function AdminStudioPage({
   onKugouApiNameChange,
   onKugouApiParamsChange,
   onKugouGenerate,
-  onKugouQrCheck,
   onKugouQrCreate,
   onKugouStatusRefresh,
   onManualMusicAdd,
@@ -7251,8 +8792,14 @@ function AdminStudioPage({
   onManualMusicRemove,
   onManualMusicReorder,
   onManualMusicSearch,
+  onMediaGenerate,
+  onMediaProbe,
+  onSunoGenerate,
+  onSunoPlan,
+  onSunoSelect,
   onProgramDraftChange,
   onProgramCategoryChange,
+  onCustomContentModeChange,
   onProgramHostToggle,
   onProgramPlaybackSpeedChange,
   onProgramPromptChange,
@@ -7262,6 +8809,7 @@ function AdminStudioPage({
   onProgramSaveDraft,
   onProgramTitleChange,
   onProgramTypeChange,
+  onSectionChange,
   onTimelineDateChange,
   programAudioRef,
   programBusy,
@@ -7269,8 +8817,10 @@ function AdminStudioPage({
   programCategories,
   programDraft,
   programHostIds,
+  programHistory,
   programPlaybackSpeed,
   programPresetBusy,
+  programPushBusyId,
   programPrompt,
   programRewriteBusy,
   programStatus,
@@ -7280,8 +8830,66 @@ function AdminStudioPage({
   publishBusy,
   selectedTimelineDate,
   soundEffectCategories,
+  sunoMusicBusy,
+  sunoCandidates,
 }: AdminShellProps) {
-  const kugou = adminConfig.plugins.kugouMusic;
+  const [voicePrompt, setVoicePrompt] = useState(adminConfig.tts.defaultStylePrompt);
+  const [mediaUrl, setMediaUrl] = useState("");
+  const [mediaSiteCookie, setMediaSiteCookie] = useState("");
+  const [mediaTitle, setMediaTitle] = useState("");
+  const [mediaCreator, setMediaCreator] = useState("");
+  const [mediaIntroMode, setMediaIntroMode] = useState<MediaIntroMode>("ai");
+  const [mediaIntroPrompt, setMediaIntroPrompt] = useState("自然介绍内容来源、主题和推荐理由，并顺畅引出接下来的节目内容。");
+  const [mediaIntroText, setMediaIntroText] = useState("");
+  const [mediaLocalCopy, setMediaLocalCopy] = useState(true);
+  const [mediaDurationMinutes, setMediaDurationMinutes] = useState(30);
+  const [mediaProbe, setMediaProbe] = useState<MediaProbeResult | null>(null);
+  const mediaProgramInput = (): MediaProgramInput => ({
+    creator: mediaCreator,
+    durationMinutes: mediaDurationMinutes,
+    introMode: mediaIntroMode,
+    introPrompt: mediaIntroPrompt,
+    introText: mediaIntroText,
+    localCopy: mediaLocalCopy,
+    mediaUrl,
+    siteCookie: mediaSiteCookie,
+    title: mediaTitle || programTitle,
+  });
+  const [aiMusicMode, setAiMusicMode] = useState<AiMusicMode>("auto");
+  const [aiMusicBrief, setAiMusicBrief] = useState(adminConfig.suno.defaultPrompt);
+  const [aiMusicLyrics, setAiMusicLyrics] = useState("");
+  const [aiMusicStyle, setAiMusicStyle] = useState(adminConfig.suno.style);
+  const [aiMusicQuantity, setAiMusicQuantity] = useState(1);
+  const [aiMusicVoiceGender, setAiMusicVoiceGender] = useState<AiMusicPlan["voiceGender"]>("random");
+  const aiMusicInput = (): AiMusicInput => ({
+    brief: aiMusicBrief,
+    instrumental: false,
+    lyrics: aiMusicLyrics,
+    mode: aiMusicMode,
+    negativeTags: "",
+    quantity: aiMusicQuantity,
+    style: aiMusicStyle,
+    title: programTitle,
+    voiceGender: aiMusicVoiceGender,
+  });
+  const applyAiMusicPlan = (plan: AiMusicPlan | null) => {
+    if (!plan) {
+      return;
+    }
+    onProgramTitleChange(plan.title);
+    setAiMusicLyrics(plan.lyrics);
+    setAiMusicStyle(plan.style);
+    setAiMusicVoiceGender(plan.voiceGender);
+  };
+  useEffect(() => {
+    const segmentStyles = (generatedProgram?.segments ?? [])
+      .map((segment) => String(segment.style ?? "").trim())
+      .filter(Boolean);
+    const sharedStyle = segmentStyles.length && segmentStyles.every((style) => style === segmentStyles[0])
+      ? segmentStyles[0]
+      : "";
+    setVoicePrompt(sharedStyle || adminConfig.tts.defaultStylePrompt || defaultVoiceStylePresets[0]);
+  }, [adminConfig.tts.defaultStylePrompt, generatedProgram?.id]);
   const generateBusy =
     programType === "daily-briefing"
       ? dailyBriefingBusy
@@ -7289,7 +8897,15 @@ function AdminStudioPage({
         ? hotTopicsBusy
         : programType === "kugou"
           ? kugouProgramBusy
-          : programBusy;
+          : programType === "media"
+            ? mediaProgramBusy
+          : programType === "suno"
+            ? sunoMusicBusy
+        : programBusy;
+  const updatesCurrentProgram = Boolean(
+    generatedProgram && programDraft.trim() &&
+    (programDraft.trim() !== generatedProgram.script.trim() || generatedProgram.status !== "ready"),
+  );
   return (
     <section className="admin-page">
       <div className="admin-page-title">
@@ -7304,19 +8920,39 @@ function AdminStudioPage({
             <div className="studio-grid studio-grid--2">
               <label className="studio-date-field">
                 <span>生成到日期</span>
-                <input value={selectedTimelineDate} onChange={(event) => onTimelineDateChange(event.target.value)} type="date" />
+                <ProgramDateInput
+                  hasTodayPrograms={programHistory.some((program) => programTimelineDate(program) === localDateKey())}
+                  onChange={onTimelineDateChange}
+                  value={selectedTimelineDate}
+                />
               </label>
               <label>
                 <span>节目名称</span>
-                <input value={programTitle} onChange={(event) => onProgramTitleChange(event.target.value)} />
+                <input value={programTitle} onChange={(event) => {
+                  const value = event.target.value;
+                  onProgramTitleChange(value);
+                  if (programType === "daily-briefing") onAdminConfigChange("plugins", "dailyBriefing", { ...adminConfig.plugins.dailyBriefing, name: value });
+                  if (programType === "hot-topics") onAdminConfigChange("plugins", "hotTopics", { ...adminConfig.plugins.hotTopics, name: value });
+                  if (programType === "kugou") onAdminConfigChange("plugins", "kugouMusic", { ...adminConfig.plugins.kugouMusic, name: value });
+                }} />
               </label>
               <label>
                 <span>节目类型</span>
-                <select className="admin-studio-type-select" value={programType} onChange={(event) => onProgramTypeChange(event.target.value as ProgramType)}>
-                  <option value="custom">自定义 AI 节目</option>
+                <select className="admin-studio-type-select" value={programType} onChange={(event) => {
+                  const nextType = event.target.value as ProgramType;
+                  onProgramTypeChange(nextType);
+                  if (nextType === "daily-briefing") onProgramTitleChange(adminConfig.plugins.dailyBriefing.name);
+                  if (nextType === "hot-topics") onProgramTitleChange(adminConfig.plugins.hotTopics.name);
+                  if (nextType === "kugou") onProgramTitleChange(adminConfig.plugins.kugouMusic.name);
+                  if (nextType === "media") onProgramTitleChange(mediaTitle || "网络媒体节目");
+                  if (nextType === "suno") onProgramTitleChange("AI原创音乐");
+                }}>
+                  <option value="custom">自定义节目</option>
                   <option value="daily-briefing">每日早报</option>
                   <option value="hot-topics">今日热榜</option>
-                  <option value="kugou">酷狗音乐</option>
+                  <option value="kugou">音乐节目（多音乐源）</option>
+                  <option value="media">网络媒体节目</option>
+                  <option value="suno">AI音乐（Suno）</option>
                 </select>
               </label>
               <label>
@@ -7332,9 +8968,40 @@ function AdminStudioPage({
 
             {programType === "custom" ? (
               <div className="studio-plugin-panel">
+                <div className="studio-content-mode" role="group" aria-label="自定义内容处理方式">
+                  <button
+                    className={customContentMode === "ai" ? "is-active" : ""}
+                    onClick={() => onCustomContentModeChange("ai")}
+                    type="button"
+                  >
+                    <WandSparkles size={17} />
+                    <span>AI 生成内容</span>
+                  </button>
+                  <button
+                    className={customContentMode === "direct" ? "is-active" : ""}
+                    onClick={() => onCustomContentModeChange("direct")}
+                    type="button"
+                  >
+                    <Volume2 size={17} />
+                    <span>原文直出配音</span>
+                  </button>
+                </div>
                 <label>
-                  <span>自定义内容（AI提示词自动生成内容）</span>
-                  <textarea value={programPrompt} onChange={(event) => onProgramPromptChange(event.target.value)} />
+                  <span>{customContentMode === "direct" ? "配音原文" : "AI 内容提示词"}</span>
+                  <textarea
+                    placeholder={
+                      customContentMode === "direct"
+                        ? "粘贴需要直接配音的完整原文；系统不会调用大模型改写。"
+                        : "描述节目主题、语气、结构和需要涵盖的内容。"
+                    }
+                    value={programPrompt}
+                    onChange={(event) => onProgramPromptChange(event.target.value)}
+                  />
+                  <small>
+                    {customContentMode === "direct"
+                      ? "原文按段落分配给所选主播，直接进入语音合成。"
+                      : "系统根据提示词调用大模型生成可播出的节目文案。"}
+                  </small>
                 </label>
                 <div className="ai-host-selector">
                   <span>参与主播</span>
@@ -7362,228 +9029,326 @@ function AdminStudioPage({
                     })
                   }
                   soundEffectCategories={soundEffectCategories}
-                  title="自定义 AI 节目背景音"
+                  title="自定义节目背景音"
                 />
+              </div>
+            ) : null}
+
+            {programType === "media" ? (
+              <div className="studio-plugin-panel media-program-panel">
+                <div className="media-program-notice">
+                  <FileAudio size={20} />
+                  <p>支持音频、视频、HLS（m3u8）直链，也支持 yt-dlp 可识别的 Bilibili、YouTube 等播放页面。需要登录的页面可临时提供站点 Cookie；DRM 内容仍无法提取。请确认你拥有播放和使用该内容的权利。</p>
+                </div>
+                <label>
+                  <span>多媒体播放地址</span>
+                  <div className="media-url-row">
+                    <input
+                      onChange={(event) => {
+                        setMediaUrl(event.target.value);
+                        setMediaProbe(null);
+                      }}
+                      placeholder="媒体直链，或 https://www.bilibili.com/video/BV... 等播放页面"
+                      type="url"
+                      value={mediaUrl}
+                    />
+                    <button
+                      disabled={mediaProgramBusy || !mediaUrl.trim()}
+                      onClick={async () => {
+                        const probe = await onMediaProbe({ mediaUrl, siteCookie: mediaSiteCookie });
+                        if (!probe) return;
+                        setMediaProbe(probe);
+                        if (!mediaTitle.trim() && probe.title) {
+                          setMediaTitle(probe.title);
+                          onProgramTitleChange(probe.title);
+                        }
+                        if (!mediaCreator.trim() && probe.creator) {
+                          setMediaCreator(probe.creator);
+                        }
+                        if (probe.resolver !== "direct") {
+                          setMediaLocalCopy(true);
+                        }
+                        if (probe.duration > 0) {
+                          setMediaDurationMinutes(Math.max(0.5, Math.round((probe.duration / 60) * 10) / 10));
+                        }
+                      }}
+                      type="button"
+                    >
+                      {mediaProgramBusy ? <Loader2 className="spin-icon" size={16} /> : <Search size={16} />}
+                      <span>检测链接</span>
+                    </button>
+                  </div>
+                </label>
+                <label>
+                  <span>站点 Cookie（选填）</span>
+                  <input
+                    autoComplete="off"
+                    onChange={(event) => { setMediaSiteCookie(event.target.value); setMediaProbe(null); }}
+                    placeholder="公开页面通常不需要；会员、登录或地区受限内容可填写当前站点 Cookie"
+                    type="password"
+                    value={mediaSiteCookie}
+                  />
+                  <small>只在本次页面解析和下载中使用，不写入节目、归档或后台配置。Cookie 等同账号凭据，请谨慎使用。</small>
+                </label>
+                {mediaProbe ? (
+                  <div className="media-probe-result">
+                    <ShieldCheck size={18} />
+                    <span><strong>{mediaProbe.resolver === "direct" ? "媒体直链可用" : "播放页面已解析"}</strong><small>{mediaProbe.resolver} · {mediaProbe.format} · {mediaProbe.codec}{mediaProbe.duration ? ` · ${formatDuration(mediaProbe.duration)}` : " · 流媒体时长未知"}</small></span>
+                  </div>
+                ) : null}
+                <div className="studio-grid studio-grid--2">
+                  <label>
+                    <span>节目 / 内容名称</span>
+                    <input onChange={(event) => { setMediaTitle(event.target.value); onProgramTitleChange(event.target.value); }} placeholder="例如：城市声音纪录片" value={mediaTitle} />
+                  </label>
+                  <label>
+                    <span>作者或内容来源（选填）</span>
+                    <input onChange={(event) => setMediaCreator(event.target.value)} placeholder="用于节目署名和 AI 介绍" value={mediaCreator} />
+                  </label>
+                  <label>
+                    <span>节目时长（分钟）</span>
+                    <input max={360} min={0.5} onChange={(event) => setMediaDurationMinutes(clampNumber(event.target.value, 0.5, 360, 30))} step={0.5} type="number" value={mediaDurationMinutes} />
+                    <small>检测到固定时长时会自动填写；直播流按这里的时长截取。</small>
+                  </label>
+                  <label className="media-local-copy-toggle">
+                    <span>播放稳定性</span>
+                    <span className="admin-switch">
+                      <input checked={mediaLocalCopy} onChange={(event) => setMediaLocalCopy(event.target.checked)} type="checkbox" />
+                      <span>{mediaLocalCopy ? "下载并提取音轨到本地" : "直接使用原始链接"}</span>
+                    </span>
+                    <small>本地化可避免链接过期、视频格式或浏览器兼容问题，但生成时间和存储占用会增加。</small>
+                  </label>
+                </div>
+                <div className="studio-content-mode" role="group" aria-label="媒体节目介绍方式">
+                  <button className={mediaIntroMode === "ai" ? "is-active" : ""} onClick={() => setMediaIntroMode("ai")} type="button"><WandSparkles size={17} /><span>AI 生成介绍并配音</span></button>
+                  <button className={mediaIntroMode === "direct" ? "is-active" : ""} onClick={() => setMediaIntroMode("direct")} type="button"><PenLine size={17} /><span>原文介绍并配音</span></button>
+                  <button className={mediaIntroMode === "none" ? "is-active" : ""} onClick={() => setMediaIntroMode("none")} type="button"><VolumeX size={17} /><span>不添加介绍</span></button>
+                </div>
+                {mediaIntroMode === "ai" ? <label>
+                  <span>AI 介绍要求</span>
+                  <textarea onChange={(event) => setMediaIntroPrompt(event.target.value)} rows={4} value={mediaIntroPrompt} />
+                  <small>大模型只根据名称、来源和这里的要求创作介绍，不会凭空分析媒体内容。</small>
+                </label> : null}
+                {mediaIntroMode === "direct" ? <label>
+                  <span>介绍词原文</span>
+                  <textarea onChange={(event) => setMediaIntroText(event.target.value)} placeholder="填写播放媒体前由主播直接配音的介绍词。" rows={6} value={mediaIntroText} />
+                </label> : null}
+                {mediaIntroMode !== "none" ? <div className="ai-host-selector ai-host-selector--compact">
+                  <span>介绍主播</span>
+                  <div>
+                    {hosts.map((hostItem) => (
+                      <button className={programHostIds.includes(hostItem.id) ? "is-active" : ""} key={hostItem.id} onClick={() => onProgramHostToggle(hostItem.id)} type="button">
+                        <img alt="" src={hostItem.image} /><strong>{hostItem.name}</strong><small>{adminConfig.tts.hostVoices?.[hostItem.id] ?? "默认音色"}</small>
+                      </button>
+                    ))}
+                  </div>
+                </div> : null}
+              </div>
+            ) : null}
+
+            {programType === "suno" ? (
+              <div className="studio-plugin-panel studio-plugin-panel--suno">
+                <StudioApiReference
+                  description="模型配置页维护本地 suno-api 地址、Suno Cookie 和默认模型。"
+                  enabled={adminConfig.suno.enabled && Boolean(adminConfig.suno.cookie) && Boolean(adminConfig.suno.captchaKey)}
+                  name="本地 suno-api 连接"
+                  onOpen={() => onSectionChange("settings")}
+                />
+                <div className="studio-content-mode" role="group" aria-label="AI音乐制作方式">
+                  <button className={aiMusicMode === "auto" ? "is-active" : ""} onClick={() => setAiMusicMode("auto")} type="button">
+                    <WandSparkles size={17} /><span>AI 全自动创作</span>
+                  </button>
+                  <button className={aiMusicMode === "manual" ? "is-active" : ""} onClick={() => setAiMusicMode("manual")} type="button">
+                    <PenLine size={17} /><span>手动歌词与提示词</span>
+                  </button>
+                </div>
+                {aiMusicMode === "auto" ? (
+                  <div className="suno-auto-settings">
+                    <p>无需填写歌词或 Styles。每次点击后，大模型会为每首歌随机创作不同题材、歌词和曲风，再直接提交 Suno 生成。</p>
+                    <div className="studio-grid studio-grid--2">
+                      <label>
+                        <span>本次生成歌曲数量</span>
+                        <input max={5} min={1} onChange={(event) => setAiMusicQuantity(clampNumber(event.target.value, 1, 5, 1))} type="number" value={aiMusicQuantity} />
+                        <small>Suno 每次请求会返回两个版本；系统按这里的数量发起创作，并默认选用每组第一版。</small>
+                      </label>
+                      <label>
+                        <span>主唱性别</span>
+                        <select onChange={(event) => setAiMusicVoiceGender(event.target.value as AiMusicPlan["voiceGender"])} value={aiMusicVoiceGender}>
+                          <option value="random">每首随机男女声</option>
+                          <option value="female">女声</option>
+                          <option value="male">男声</option>
+                        </select>
+                      </label>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <div className="studio-grid studio-grid--2 suno-studio-grid">
+                      <label>
+                        <span>Styles</span>
+                        <textarea onChange={(event) => setAiMusicStyle(event.target.value)} placeholder="mandopop, cinematic, 92 bpm" rows={5} value={aiMusicStyle} />
+                      </label>
+                      <label>
+                        <span>主唱性别</span>
+                        <select onChange={(event) => setAiMusicVoiceGender(event.target.value as AiMusicPlan["voiceGender"])} value={aiMusicVoiceGender}>
+                          <option value="random">随机</option>
+                          <option value="female">女声</option>
+                          <option value="male">男声</option>
+                        </select>
+                      </label>
+                    </div>
+                    <label>
+                      <span>Lyrics</span>
+                      <textarea
+                        className="suno-lyrics-input"
+                        onChange={(event) => setAiMusicLyrics(event.target.value)}
+                        placeholder="支持 [Verse]、[Pre-Chorus]、[Chorus]、[Bridge]、[Outro] 等结构标记。"
+                        rows={14}
+                        value={aiMusicLyrics}
+                      />
+                    </label>
+                    <div className="suno-studio-actions">
+                      <button
+                        disabled={sunoMusicBusy}
+                        onClick={async () => applyAiMusicPlan(await onSunoPlan({ ...aiMusicInput(), mode: "auto" }))}
+                        type="button"
+                      >
+                        {sunoMusicBusy ? <Loader2 className="spin-icon" size={17} /> : <WandSparkles size={17} />}
+                        <span>大模型随机填入一份</span>
+                      </button>
+                    </div>
+                  </>
+                )}
               </div>
             ) : null}
 
             {programType === "daily-briefing" ? (
               <div className="studio-plugin-panel">
-                <div className="config-grid config-grid--compact">
-                  <ConfigField label="启用插件">
-                    <label className="admin-switch">
-                      <input
-                        checked={adminConfig.plugins.dailyBriefing.enabled}
-                        onChange={(event) =>
-                          onAdminConfigChange("plugins", "dailyBriefing", {
-                            ...adminConfig.plugins.dailyBriefing,
-                            enabled: event.target.checked,
-                          })
-                        }
-                        type="checkbox"
-                      />
-                      <span>{adminConfig.plugins.dailyBriefing.enabled ? "已启用" : "已停用"}</span>
-                    </label>
-                  </ConfigField>
-                  <ConfigField label="插件名称">
-                    <input
-                      value={adminConfig.plugins.dailyBriefing.name}
-                      onChange={(event) =>
-                        onAdminConfigChange("plugins", "dailyBriefing", {
-                          ...adminConfig.plugins.dailyBriefing,
-                          name: event.target.value,
-                        })
-                      }
-                    />
-                  </ConfigField>
-                  <ConfigField label="ALAPI Endpoint">
-                    <input
-                      value={adminConfig.plugins.dailyBriefing.apiBaseUrl}
-                      onChange={(event) =>
-                        onAdminConfigChange("plugins", "dailyBriefing", {
-                          ...adminConfig.plugins.dailyBriefing,
-                          apiBaseUrl: event.target.value,
-                        })
-                      }
-                    />
-                  </ConfigField>
-                  <ConfigField label="ALAPI Token">
-                    <input
-                      type="password"
-                      value={adminConfig.plugins.dailyBriefing.token}
-                      onChange={(event) =>
-                        onAdminConfigChange("plugins", "dailyBriefing", {
-                          ...adminConfig.plugins.dailyBriefing,
-                          token: event.target.value,
-                        })
-                      }
-                    />
-                  </ConfigField>
-                  <ConfigField label={`播报速度 ${adminConfig.plugins.dailyBriefing.playbackSpeed.toFixed(2)}x`}>
-                    <input
-                      max={2}
-                      min={0.5}
-                      step={0.05}
-                      type="range"
-                      value={adminConfig.plugins.dailyBriefing.playbackSpeed}
-                      onChange={(event) =>
-                        onAdminConfigChange("plugins", "dailyBriefing", {
-                          ...adminConfig.plugins.dailyBriefing,
-                          playbackSpeed: clampNumber(event.target.value, 0.5, 2, 1),
-                        })
-                      }
-                    />
-                  </ConfigField>
+                <StudioApiReference description="接口页只维护 ALAPI Endpoint 和 Token。" enabled={adminConfig.plugins.dailyBriefing.enabled} name="每日早报 API 连接" onOpen={() => onSectionChange("plugins")} />
+                <div className="studio-grid studio-grid--2">
+                  <label><span>最多采集条数</span><input max={30} min={3} type="number" value={adminConfig.plugins.dailyBriefing.maxItems} onChange={(event) => onAdminConfigChange("plugins", "dailyBriefing", { ...adminConfig.plugins.dailyBriefing, maxItems: Number(event.target.value) })} /></label>
+                  <label><span>播报主播</span><select value={adminConfig.plugins.dailyBriefing.hostId} onChange={(event) => onAdminConfigChange("plugins", "dailyBriefing", { ...adminConfig.plugins.dailyBriefing, hostId: event.target.value })}>{hosts.map((host) => <option key={host.id} value={host.id}>{host.name}</option>)}</select></label>
+                  <label><span>播报速度</span><input max={2} min={0.5} step={0.05} type="number" value={adminConfig.plugins.dailyBriefing.playbackSpeed} onChange={(event) => onAdminConfigChange("plugins", "dailyBriefing", { ...adminConfig.plugins.dailyBriefing, playbackSpeed: clampNumber(event.target.value, 0.5, 2, 1) })} /></label>
                 </div>
-                <AudioMixEditor
-                  audioMix={adminConfig.plugins.dailyBriefing.audioMix}
-                  onChange={(audioMix) =>
-                    onAdminConfigChange("plugins", "dailyBriefing", {
-                      ...adminConfig.plugins.dailyBriefing,
-                      audioMix,
-                    })
-                  }
-                  soundEffectCategories={soundEffectCategories}
-                  title="每日早报背景音"
-                />
+                <AudioMixEditor audioMix={adminConfig.plugins.dailyBriefing.audioMix} onChange={(audioMix) => onAdminConfigChange("plugins", "dailyBriefing", { ...adminConfig.plugins.dailyBriefing, audioMix })} soundEffectCategories={soundEffectCategories} title="每日早报背景音" />
               </div>
             ) : null}
 
             {programType === "hot-topics" ? (
               <div className="studio-plugin-panel">
-                <div className="config-grid config-grid--compact">
-                  <ConfigField label="启用插件">
-                    <label className="admin-switch">
-                      <input
-                        checked={adminConfig.plugins.hotTopics.enabled}
-                        onChange={(event) =>
-                          onAdminConfigChange("plugins", "hotTopics", {
-                            ...adminConfig.plugins.hotTopics,
-                            enabled: event.target.checked,
-                          })
-                        }
-                        type="checkbox"
-                      />
-                      <span>{adminConfig.plugins.hotTopics.enabled ? "已启用" : "已停用"}</span>
-                    </label>
-                  </ConfigField>
-                  <ConfigField label="插件名称">
-                    <input
-                      value={adminConfig.plugins.hotTopics.name}
-                      onChange={(event) =>
-                        onAdminConfigChange("plugins", "hotTopics", {
-                          ...adminConfig.plugins.hotTopics,
-                          name: event.target.value,
-                        })
-                      }
-                    />
-                  </ConfigField>
-                  <ConfigField label="ALAPI Endpoint">
-                    <input
-                      value={adminConfig.plugins.hotTopics.apiBaseUrl}
-                      onChange={(event) =>
-                        onAdminConfigChange("plugins", "hotTopics", {
-                          ...adminConfig.plugins.hotTopics,
-                          apiBaseUrl: event.target.value,
-                        })
-                      }
-                    />
-                  </ConfigField>
-                  <ConfigField label="热榜类型">
-                    <input
-                      value={adminConfig.plugins.hotTopics.type}
-                      onChange={(event) =>
-                        onAdminConfigChange("plugins", "hotTopics", {
-                          ...adminConfig.plugins.hotTopics,
-                          type: event.target.value,
-                        })
-                      }
-                    />
-                  </ConfigField>
-                  <ConfigField label="ALAPI Token" hint="留空沿用每日早报 Token。">
-                    <input
-                      type="password"
-                      value={adminConfig.plugins.hotTopics.token}
-                      onChange={(event) =>
-                        onAdminConfigChange("plugins", "hotTopics", {
-                          ...adminConfig.plugins.hotTopics,
-                          token: event.target.value,
-                        })
-                      }
-                    />
-                  </ConfigField>
-                  <ConfigField label={`播报速度 ${adminConfig.plugins.hotTopics.playbackSpeed.toFixed(2)}x`}>
-                    <input
-                      max={2}
-                      min={0.5}
-                      step={0.05}
-                      type="range"
-                      value={adminConfig.plugins.hotTopics.playbackSpeed}
-                      onChange={(event) =>
-                        onAdminConfigChange("plugins", "hotTopics", {
-                          ...adminConfig.plugins.hotTopics,
-                          playbackSpeed: clampNumber(event.target.value, 0.5, 2, 1),
-                        })
-                      }
-                    />
-                  </ConfigField>
+                <StudioApiReference description="接口页只维护 ALAPI Endpoint 和 Token。" enabled={adminConfig.plugins.hotTopics.enabled} name="今日热榜 API 连接" onOpen={() => onSectionChange("plugins")} />
+                <div className="studio-grid studio-grid--2">
+                  <label><span>热榜类型</span><input placeholder="weibo" value={adminConfig.plugins.hotTopics.type} onChange={(event) => onAdminConfigChange("plugins", "hotTopics", { ...adminConfig.plugins.hotTopics, type: event.target.value })} /></label>
+                  <label><span>最多采集条数</span><input max={30} min={3} type="number" value={adminConfig.plugins.hotTopics.maxItems} onChange={(event) => onAdminConfigChange("plugins", "hotTopics", { ...adminConfig.plugins.hotTopics, maxItems: Number(event.target.value) })} /></label>
+                  <label><span>播报主播</span><select value={adminConfig.plugins.hotTopics.hostId} onChange={(event) => onAdminConfigChange("plugins", "hotTopics", { ...adminConfig.plugins.hotTopics, hostId: event.target.value })}>{hosts.map((host) => <option key={host.id} value={host.id}>{host.name}</option>)}</select></label>
+                  <label><span>播报速度</span><input max={2} min={0.5} step={0.05} type="number" value={adminConfig.plugins.hotTopics.playbackSpeed} onChange={(event) => onAdminConfigChange("plugins", "hotTopics", { ...adminConfig.plugins.hotTopics, playbackSpeed: clampNumber(event.target.value, 0.5, 2, 1) })} /></label>
                 </div>
-                <AudioMixEditor
-                  audioMix={adminConfig.plugins.hotTopics.audioMix}
-                  onChange={(audioMix) =>
-                    onAdminConfigChange("plugins", "hotTopics", {
-                      ...adminConfig.plugins.hotTopics,
-                      audioMix,
-                    })
-                  }
-                  soundEffectCategories={soundEffectCategories}
-                  title="今日热榜背景音"
-                />
+                <AudioMixEditor audioMix={adminConfig.plugins.hotTopics.audioMix} onChange={(audioMix) => onAdminConfigChange("plugins", "hotTopics", { ...adminConfig.plugins.hotTopics, audioMix })} soundEffectCategories={soundEffectCategories} title="今日热榜背景音" />
               </div>
             ) : null}
 
             {programType === "kugou" ? (
               <div className="studio-plugin-panel studio-plugin-panel--kugou">
-                <KugouConfigPanel
-                  adminConfig={adminConfig}
-                  kugou={kugou}
-                  onAdminConfigChange={onAdminConfigChange}
-                  kugouApiBusy={kugouApiBusy}
-                  kugouApiName={kugouApiName}
-                  kugouApiParams={kugouApiParams}
-                  kugouApiResult={kugouApiResult}
-                  kugouLoginBusy={kugouLoginBusy}
-                  kugouQr={kugouQr}
-                  kugouStatus={kugouStatus}
-                  manualMusicQuery={manualMusicQuery}
-                  manualMusicResults={manualMusicResults}
-                  manualMusicSearchBusy={manualMusicSearchBusy}
-                  manualMusicSelected={manualMusicSelected}
-                  manualMusicStatus={manualMusicStatus}
-                  onKugouApiCall={onKugouApiCall}
-                  onKugouApiNameChange={onKugouApiNameChange}
-                  onKugouApiParamsChange={onKugouApiParamsChange}
-                  onKugouQrCheck={onKugouQrCheck}
-                  onKugouQrCreate={onKugouQrCreate}
-                  onKugouStatusRefresh={onKugouStatusRefresh}
-                  onManualMusicAdd={onManualMusicAdd}
-                  onManualMusicQueryChange={onManualMusicQueryChange}
-                  onManualMusicRemove={onManualMusicRemove}
-                  onManualMusicReorder={onManualMusicReorder}
-                  onManualMusicSearch={onManualMusicSearch}
+                <StudioApiReference
+                  description="接口页只维护酷狗、网易云和 QQ 音乐的启用状态与 Cookie。"
+                  enabled={adminConfig.plugins.kugouMusic.apiEnabled || adminConfig.plugins.neteaseMusic.enabled || adminConfig.plugins.qqMusic.enabled}
+                  name="多音乐源 API 连接"
+                  onOpen={() => onSectionChange("plugins")}
                 />
+                <div className="studio-grid studio-grid--2">
+                  <label><span>音乐来源</span><select value={adminConfig.plugins.kugouMusic.provider} onChange={(event) => onAdminConfigChange("plugins", "kugouMusic", { ...adminConfig.plugins.kugouMusic, provider: event.target.value as MusicProvider })}><option value="auto">智能混合（推荐）</option><option value="kugou">仅酷狗音乐</option><option value="netease">仅网易云音乐</option><option value="qq">仅 QQ 音乐</option></select></label>
+                  <label><span>选歌类型</span><select value={adminConfig.plugins.kugouMusic.source} onChange={(event) => onAdminConfigChange("plugins", "kugouMusic", { ...adminConfig.plugins.kugouMusic, source: event.target.value })}><option value="new">新歌速递</option><option value="hot">热门好歌</option><option value="classic">经典老歌</option><option value="treasure">小众宝藏</option><option value="search">关键词搜索</option></select></label>
+                  <label><span>搜索关键词</span><input value={adminConfig.plugins.kugouMusic.searchKeywords} onChange={(event) => onAdminConfigChange("plugins", "kugouMusic", { ...adminConfig.plugins.kugouMusic, searchKeywords: event.target.value })} /></label>
+                  <label><span>歌曲数量</span><input max={100} min={1} type="number" value={adminConfig.plugins.kugouMusic.maxSongs} onChange={(event) => onAdminConfigChange("plugins", "kugouMusic", { ...adminConfig.plugins.kugouMusic, maxSongs: Math.max(1, Math.min(100, Number(event.target.value) || 1)) })} /></label>
+                  <label><span>音质</span><select value={adminConfig.plugins.kugouMusic.quality} onChange={(event) => onAdminConfigChange("plugins", "kugouMusic", { ...adminConfig.plugins.kugouMusic, quality: event.target.value })}><option value="128">标准 128k</option><option value="320">高品 320k</option><option value="flac">无损 FLAC</option></select></label>
+                  <label><span>串场主播</span><select value={adminConfig.plugins.kugouMusic.hostId} onChange={(event) => onAdminConfigChange("plugins", "kugouMusic", { ...adminConfig.plugins.kugouMusic, hostId: event.target.value })}>{hosts.map((host) => <option key={host.id} value={host.id}>{host.name}</option>)}</select></label>
+                  <label className="flow-check filler-enable-check"><input checked={adminConfig.plugins.kugouMusic.enabled} onChange={(event) => onAdminConfigChange("plugins", "kugouMusic", { ...adminConfig.plugins.kugouMusic, enabled: event.target.checked })} type="checkbox" /><span>启用音乐节目功能</span></label>
+                  <label className="flow-check filler-enable-check"><input checked={adminConfig.plugins.kugouMusic.useAiScript} onChange={(event) => onAdminConfigChange("plugins", "kugouMusic", { ...adminConfig.plugins.kugouMusic, useAiScript: event.target.checked })} type="checkbox" /><span>生成 AI 串场和配音</span></label>
+                </div>
+                <div className="manual-music-builder">
+                  <div className="manual-music-search">
+                    <input value={manualMusicQuery} onChange={(event) => onManualMusicQueryChange(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void onManualMusicSearch(); } }} placeholder="搜索歌曲 / 歌手" />
+                    <button disabled={manualMusicSearchBusy} onClick={onManualMusicSearch} type="button">{manualMusicSearchBusy ? <Loader2 className="spin-icon" size={18} /> : <Search size={18} />}<span>{manualMusicSearchBusy ? "搜索中" : "多源搜索"}</span></button>
+                  </div>
+                  <div className="manual-music-list">
+                    <strong>搜索结果</strong>
+                    {manualMusicResults.length ? manualMusicResults.map((song) => <button key={songKey(song)} onClick={() => onManualMusicAdd(song)} type="button"><span><b>{song.title}</b><small>{song.artist || "未知歌手"} · {song.source === "netease" ? "网易云" : song.source === "qq" ? "QQ 音乐" : "酷狗"}</small></span><Plus size={16} /></button>) : <p>按当前音乐来源搜索后，可加入右侧手动播放清单。</p>}
+                  </div>
+                  <div className="manual-music-list manual-music-list--selected">
+                    <strong>手动播放顺序</strong>
+                    {manualMusicSelected.length ? manualMusicSelected.map((song, index) => <div key={`${songKey(song)}-${index}`}><span className="manual-music-index">{String(index + 1).padStart(2, "0")}</span><span><b>{song.title}</b><small>{song.artist || "未知歌手"} · {song.source === "netease" ? "网易云" : song.source === "qq" ? "QQ 音乐" : "酷狗"}</small></span><button disabled={index === 0} onClick={() => onManualMusicReorder(index, -1)} title="上移" type="button"><ArrowUp size={16} /></button><button disabled={index === manualMusicSelected.length - 1} onClick={() => onManualMusicReorder(index, 1)} title="下移" type="button"><ArrowDown size={16} /></button><button onClick={() => onManualMusicRemove(index)} title="移除" type="button"><Trash2 size={16} /></button></div>) : <p>不手动选择时，系统按上方来源和选歌类型自动取歌。</p>}
+                  </div>
+                </div>
+                {manualMusicStatus ? <p className="kugou-status">{manualMusicStatus}</p> : null}
               </div>
             ) : null}
 
+            {programType !== "suno" && !(programType === "media" && mediaIntroMode === "none") ? <div className="studio-voice-prompt">
+              <div>
+                <span><Mic2 size={18} />配音语气提示词</span>
+                <small>用于当前节目全部配音片段；可选择预设后继续手动修改。</small>
+              </div>
+              <select
+                aria-label="配音语气预设"
+                onChange={(event) => setVoicePrompt(event.target.value)}
+                value={(adminConfig.tts.stylePresets ?? []).includes(voicePrompt) ? voicePrompt : ""}
+              >
+                <option value="">自定义语气</option>
+                {(adminConfig.tts.stylePresets ?? defaultVoiceStylePresets).map((prompt) => (
+                  <option key={prompt} value={prompt}>{prompt}</option>
+                ))}
+              </select>
+              <textarea
+                onChange={(event) => setVoicePrompt(event.target.value)}
+                placeholder="例如：温柔、放松、像深夜陪伴型电台主播，停顿自然，语速舒缓。"
+                rows={3}
+                value={voicePrompt}
+              />
+              <button
+                onClick={() => onAdminConfigChange("tts", "defaultStylePrompt", voicePrompt.trim() || defaultVoiceStylePresets[0])}
+                type="button"
+              >
+                <Save size={16} /><span>设为默认语气</span>
+              </button>
+            </div> : null}
+
             <div className="ai-action-row">
-              <button className="admin-primary-button" disabled={programPresetBusy} onClick={onGenerateProgramPreset} type="button">
+              {programType !== "suno" && programType !== "media" ? <button className="admin-primary-button" disabled={programPresetBusy} onClick={onGenerateProgramPreset} type="button">
                 {programPresetBusy ? <Loader2 className="spin-icon" size={20} /> : <Save size={20} />}
                 <span>{programPresetBusy ? "保存中" : "生成节目预设"}</span>
+              </button> : null}
+              <button
+                disabled={generateBusy}
+                onClick={async () => {
+                  if (programType === "suno") {
+                    const plan = await onSunoGenerate(aiMusicInput());
+                    if (aiMusicMode === "manual") {
+                      applyAiMusicPlan(plan);
+                    }
+                    return;
+                  }
+                  if (programType === "media") {
+                    const probe = await onMediaGenerate(mediaProgramInput(), voicePrompt);
+                    if (probe) {
+                      setMediaProbe(probe);
+                    }
+                    return;
+                  }
+                  await onGenerateProgram(voicePrompt);
+                }}
+                type="button"
+              >
+                {generateBusy ? <Loader2 className="spin-icon" size={18} /> : customContentMode === "direct" && programType === "custom" ? <Volume2 size={18} /> : <WandSparkles size={18} />}
+                <span>{generateBusy ? (programType === "suno" ? "AI音乐生成中" : programType === "media" ? (mediaLocalCopy ? "音轨提取中" : "媒体节目生成中") : "生成中") : programType === "suno" ? (aiMusicMode === "auto" ? "全自动生成 AI 音乐" : "使用当前歌词生成 AI 音乐") : programType === "media" ? "生成网络媒体节目" : updatesCurrentProgram ? "更新当前节目" : customContentMode === "direct" && programType === "custom" ? "原文生成配音" : "立即生成节目"}</span>
               </button>
-              <button disabled={generateBusy} onClick={onGenerateProgram} type="button">
-                {generateBusy ? <Loader2 className="spin-icon" size={18} /> : <WandSparkles size={18} />}
-                <span>{generateBusy ? "生成中" : "立即生成节目"}</span>
-              </button>
+              {programType === "media" ? <button
+                disabled={generateBusy}
+                onClick={() => void onMediaGenerate(mediaProgramInput(), voicePrompt, true)}
+                type="button"
+              >
+                <Save size={18} />
+                <span>保存节目后台生成</span>
+              </button> : null}
             </div>
           </div>
         </section>
@@ -7597,9 +9362,9 @@ function AdminStudioPage({
                   <strong>{generatedProgram.title}</strong>
                   <small>{generatedProgram.host} · {new Date(generatedProgram.createdAt).toLocaleString("zh-CN", { hour12: false, timeZone: "Asia/Shanghai" })}</small>
                 </span>
-                <em>{generatedProgram.status === "ready" ? "已配音" : "待配音"}</em>
+                <em>{generatedProgram.sourceType === "suno" ? "AI音乐已生成" : generatedProgram.sourceType === "media-link" ? (generatedProgram.status === "generating" ? "后台生成中" : generatedProgram.status === "failed" ? "生成失败" : "网络媒体已生成") : generatedProgram.status === "ready" ? "已配音" : "待配音"}</em>
               </div>
-              <label className="program-speed-control">
+              {!['suno', 'media-link'].includes(String(generatedProgram.sourceType)) ? <label className="program-speed-control">
                 <span>播报速度 {programPlaybackSpeed.toFixed(2)}x</span>
                 <input
                   max={2}
@@ -7609,8 +9374,8 @@ function AdminStudioPage({
                   type="range"
                   value={programPlaybackSpeed}
                 />
-              </label>
-              <div className="ai-host-selector ai-host-selector--compact">
+              </label> : null}
+              {!['suno', 'media-link'].includes(String(generatedProgram.sourceType)) ? <div className="ai-host-selector ai-host-selector--compact">
                 <span>重配音主播</span>
                 <div>
                   {hosts.map((host) => (
@@ -7626,28 +9391,28 @@ function AdminStudioPage({
                     </button>
                   ))}
                 </div>
-              </div>
-              <textarea value={programDraft} onChange={(event) => onProgramDraftChange(event.target.value)} />
+              </div> : null}
+              <textarea readOnly={['suno', 'media-link'].includes(String(generatedProgram.sourceType))} value={programDraft} onChange={(event) => onProgramDraftChange(event.target.value)} />
               <div className="program-edit-actions">
-                <button onClick={onProgramSaveDraft} type="button">
+                {!['suno', 'media-link'].includes(String(generatedProgram.sourceType)) ? <button onClick={() => onProgramSaveDraft(voicePrompt)} type="button">
                   <Save size={18} />
                   <span>保存改稿</span>
-                </button>
-                <button className="is-ai" disabled={programRewriteBusy} onClick={onProgramRewriteScript} type="button">
+                </button> : null}
+                {!['suno', 'media-link'].includes(String(generatedProgram.sourceType)) ? <button className="is-ai" disabled={programRewriteBusy} onClick={onProgramRewriteScript} type="button">
                   {programRewriteBusy ? <Loader2 className="spin-icon" size={18} /> : <Sparkles size={18} />}
                   <span>{programRewriteBusy ? "重编中" : "AI重编"}</span>
-                </button>
-                <button className="is-primary" disabled={programTtsBusy} onClick={onProgramRegenerateTts} type="button">
+                </button> : null}
+                {!['suno', 'media-link'].includes(String(generatedProgram.sourceType)) ? <button className="is-primary" disabled={programTtsBusy} onClick={() => onProgramRegenerateTts(voicePrompt)} type="button">
                   {programTtsBusy ? <Loader2 className="spin-icon" size={18} /> : <RefreshCw size={18} />}
                   <span>{programTtsBusy ? "配音中" : "重新配音"}</span>
-                </button>
+                </button> : null}
                 <button
-                  disabled={publishBusy || generatedProgram.status !== "ready" || !generatedProgram.audioUrl}
-                  onClick={() => onProgramPushHome(generatedProgram.id)}
+                  disabled={programPushBusyId === generatedProgram.id}
+                  onClick={() => onProgramPushHome(generatedProgram.id, voicePrompt)}
                   type="button"
                 >
-                  {publishBusy ? <Loader2 className="spin-icon" size={18} /> : <Radio size={18} />}
-                  <span>{publishBusy ? "调整中" : "立即推送"}</span>
+                  {programPushBusyId === generatedProgram.id ? <Loader2 className="spin-icon" size={18} /> : <Radio size={18} />}
+                  <span>{programPushBusyId === generatedProgram.id ? "更新并推送中" : "立即推送"}</span>
                 </button>
                 <button className="is-danger" onClick={() => onDeleteProgram(generatedProgram.id)} type="button">
                   <Trash2 size={18} />
@@ -7655,6 +9420,26 @@ function AdminStudioPage({
                 </button>
               </div>
               {generatedProgram.audioUrl ? <audio ref={programAudioRef} className="program-audio" controls src={generatedProgram.audioUrl} /> : null}
+              {generatedProgram.sourceType === "suno" && sunoCandidates.length ? (
+                <div className="suno-candidate-panel">
+                  <div className="program-songs-header">Suno 双版本试听与选用</div>
+                  <p>每次 Suno 创作会返回两个版本。系统默认使用第一版；试听后可以为节目中的每首歌单独切换。</p>
+                  <div className="suno-candidate-grid">
+                    {sunoCandidates.map((candidate) => (
+                      <article className={candidate.selected ? "is-selected" : ""} key={`${candidate.slotIndex}-${candidate.id}`}>
+                        <span>
+                          <strong>第 {candidate.slotIndex + 1} 首 · 版本 {candidate.variantIndex === 0 ? "A" : "B"}</strong>
+                          <small>{candidate.title}</small>
+                        </span>
+                        <audio controls preload="none" src={candidate.audioUrl} />
+                        <button disabled={candidate.selected || sunoMusicBusy} onClick={() => onSunoSelect(candidate)} type="button">
+                          {candidate.selected ? "节目正在使用" : "选用此版本"}
+                        </button>
+                      </article>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
               {generatedProgram.segments?.length ? (
                 <div className="program-segments program-segments--admin">
                   {generatedProgram.segments.map((segment, index) => (
@@ -7671,11 +9456,11 @@ function AdminStudioPage({
               ) : null}
               {generatedProgram.playlist?.some((item) => item.type === "song") ? (
                 <div className="program-segments program-segments--admin">
-                  <div className="program-songs-header">歌曲列表（{generatedProgram.playlist.filter((item) => item.type === "song").length} 首）</div>
+                  <div className="program-songs-header">{generatedProgram.sourceType === "media-link" ? "媒体内容" : `歌曲列表（${generatedProgram.playlist.filter((item) => item.type === "song").length} 首）`}</div>
                   {generatedProgram.playlist
                     .filter((item) => item.type === "song")
                     .map((song, index) => (
-                      <div key={`${song.hash ?? song.albumAudioId ?? song.title}-${index}`}>
+                      <div key={`${songKey(song)}-${index}`}>
                         <span>
                           <strong>{String(index + 1).padStart(2, "0")} · {song.title}</strong>
                           <small>{song.artist || "未知歌手"}{song.duration ? ` · ${formatDuration(song.duration)}` : ""}</small>
@@ -7718,7 +9503,6 @@ type KugouConfigPanelProps = {
   onKugouApiCall: () => void | Promise<void>;
   onKugouApiNameChange: (value: string) => void;
   onKugouApiParamsChange: (value: string) => void;
-  onKugouQrCheck: () => void | Promise<void>;
   onKugouQrCreate: () => void | Promise<void>;
   onKugouStatusRefresh: () => void | Promise<void>;
   onManualMusicAdd: (song: MusicCandidate) => void;
@@ -7747,7 +9531,6 @@ function KugouConfigPanel(props: KugouConfigPanelProps) {
     onKugouApiCall,
     onKugouApiNameChange,
     onKugouApiParamsChange,
-    onKugouQrCheck,
     onKugouQrCreate,
     onKugouStatusRefresh,
     onManualMusicAdd,
@@ -7895,7 +9678,7 @@ function KugouConfigPanel(props: KugouConfigPanelProps) {
             {manualMusicResults.length ? (
               manualMusicResults.map((song) => (
                 <button
-                  key={`${song.hash ?? song.albumAudioId ?? song.title}-${song.artist ?? ""}`}
+                  key={songKey(song)}
                   onClick={() => onManualMusicAdd(song)}
                   type="button"
                 >
@@ -7914,7 +9697,7 @@ function KugouConfigPanel(props: KugouConfigPanelProps) {
             <strong>手动播放顺序</strong>
             {manualMusicSelected.length ? (
               manualMusicSelected.map((song, index) => (
-                <div key={`${song.hash ?? song.albumAudioId ?? song.title}-${index}`}>
+                <div key={`${songKey(song)}-${index}`}>
                   <span className="manual-music-index">{String(index + 1).padStart(2, "0")}</span>
                   <span>
                     <b>{song.title}</b>
@@ -7953,10 +9736,12 @@ function KugouConfigPanel(props: KugouConfigPanelProps) {
           {kugouLoginBusy ? <Loader2 className="spin-icon" size={18} /> : <QrCode size={18} />}
           <span>扫码登录</span>
         </button>
-        <button disabled={!kugouQr || kugouLoginBusy} type="button" onClick={onKugouQrCheck}>
-          <ShieldCheck size={18} />
-          <span>检查扫码</span>
-        </button>
+        {kugouQr ? (
+          <span className="kugou-auto-check">
+            <Loader2 className="spin-icon" size={17} />
+            自动检测扫码状态
+          </span>
+        ) : null}
       </div>
 
       {kugouQr ? (
@@ -8016,6 +9801,8 @@ function AdminTimelinePage({
   onTimelineDateChange,
   programAudioRef,
   programCategories,
+  programHistory,
+  programPushBusyId,
   publishBusy,
   scheduleDrafts,
   selectedTimelineDate,
@@ -8025,7 +9812,7 @@ function AdminTimelinePage({
     <section className="admin-page">
       <div className="admin-page-title admin-page-title--with-action">
         <div>
-          <span>节目编排</span>
+          <span>播出排期</span>
           <h1>按固定日期编排节目</h1>
           <p>选择日期后，生成、排序和发布都会围绕该日期的节目队列进行。</p>
         </div>
@@ -8037,7 +9824,11 @@ function AdminTimelinePage({
       <section className="admin-card timeline-date-card">
         <label>
           <span>编排日期</span>
-          <input value={selectedTimelineDate} onChange={(event) => onTimelineDateChange(event.target.value)} type="date" />
+          <ProgramDateInput
+            hasTodayPrograms={programHistory.some((program) => programTimelineDate(program) === localDateKey())}
+            onChange={onTimelineDateChange}
+            value={selectedTimelineDate}
+          />
         </label>
         <div>
           <strong>{selectedTimelineDate}</strong>
@@ -8084,12 +9875,12 @@ function AdminTimelinePage({
                 onScheduleSave={onProgramScheduleSave}
                 onSelect={onProgramSelect}
                 program={program}
-                publishBusy={publishBusy}
+                pushBusy={programPushBusyId === program.id}
                 scheduleDraft={scheduleDrafts[program.id] ?? toDatetimeLocalValue(program.scheduledAt)}
               />
             ))
           ) : (
-            <div className="program-empty program-empty--compact">该日期还没有节目。请先在“节目制作”或“采集插件”生成内容。</div>
+            <div className="program-empty program-empty--compact">该日期还没有节目。请先在“节目制作”或“接口 API”生成内容。</div>
           )}
         </div>
       </section>
@@ -8102,8 +9893,9 @@ function AdminArchivePage({
   onProgramArchiveDeleteDate,
   onProgramArchiveRefresh,
   programArchives,
+  programHistory,
 }: AdminShellProps) {
-  const [selectedArchiveDate, setSelectedArchiveDate] = useState("");
+  const [selectedArchiveDate, setSelectedArchiveDate] = useState(localDateKey());
   const totalCount = programArchives.reduce((sum, group) => sum + group.programs.length, 0);
   const visibleGroups = selectedArchiveDate
     ? programArchives.filter((group) => group.date === selectedArchiveDate)
@@ -8120,10 +9912,10 @@ function AdminArchivePage({
         <div className="admin-archive-actions">
           <label className="admin-date-field">
             <span>日期</span>
-            <input
-              type="date"
+            <ProgramDateInput
+              hasTodayPrograms={programHistory.some((program) => programTimelineDate(program) === localDateKey()) || programArchives.some((group) => group.date === localDateKey() && group.programs.length > 0)}
+              onChange={setSelectedArchiveDate}
               value={selectedArchiveDate}
-              onChange={(event) => setSelectedArchiveDate(event.target.value)}
             />
           </label>
           <button className="admin-primary-button" onClick={onProgramArchiveRefresh} type="button">
@@ -8214,13 +10006,17 @@ function AdminMusicPage({
       <div className="admin-page-title admin-page-title--with-action">
         <div>
           <span>音乐点播</span>
-          <h1>管理“往期AI音乐点播”的节目</h1>
+          <h1>管理“音乐节目点播”的节目</h1>
           <p>这里列出所有音乐联播节目，可删除不再需要的节目（同步从前台点播列表移除）。</p>
         </div>
         <div className="admin-archive-actions">
           <label className="admin-date-field">
             <span>日期</span>
-            <input type="date" value={cleanupDate} onChange={(event) => setCleanupDate(event.target.value)} />
+            <ProgramDateInput
+              hasTodayPrograms={programHistory.some((program) => programTimelineDate(program) === localDateKey())}
+              onChange={setCleanupDate}
+              value={cleanupDate}
+            />
           </label>
           <button className="is-danger archive-program-delete" disabled={!cleanupDatePrograms.length} onClick={() => onProgramClearDate(cleanupDate, "kugou-music")} type="button">
             <Trash2 size={16} />
@@ -8280,7 +10076,7 @@ function AdminMusicPage({
         ) : (
           <section className="admin-card">
             <div className="program-empty program-empty--compact">
-              暂无音乐节目，请到「采集插件」生成音乐联播节目。
+              暂无音乐节目，请到「接口 API」启用音乐来源，再在「节目制作」生成音乐节目。
             </div>
           </section>
         )}
@@ -9011,15 +10807,16 @@ function AudioMixEditor({
           <span>{audioMix.enabled ? "已启用" : "已停用"}</span>
         </label>
       </div>
-      <div className="sound-effect-picker">
+      <div className="sound-effect-picker" role="list">
         {effects.length ? (
           effects.map((effect) => (
-            <label className={selectedIds.has(effect.id) ? "is-active" : ""} key={effect.id}>
+            <label className={selectedIds.has(effect.id) ? "is-active" : ""} key={effect.id} role="listitem">
               <input checked={selectedIds.has(effect.id)} onChange={() => toggleEffect(effect.id)} type="checkbox" />
               <span>
                 <strong>{effect.name}</strong>
                 <small>{effect.categoryName}</small>
               </span>
+              <em>{selectedIds.has(effect.id) ? "已选择" : "选择"}</em>
             </label>
           ))
         ) : (
@@ -9064,84 +10861,448 @@ function AudioMixEditor({
   );
 }
 
-function AdminPluginPage({
-  adminConfig,
-  onAdminConfigSave,
-  onSectionChange,
-}: AdminShellProps) {
-  const dailyBriefing = adminConfig.plugins.dailyBriefing;
-  const hotTopics = adminConfig.plugins.hotTopics;
-  const kugou = adminConfig.plugins.kugouMusic;
+function MusicSourceQrLogin({
+  onCookie,
+  onLoggedIn,
+  provider,
+}: {
+  onCookie: (cookie: string) => void;
+  onLoggedIn?: () => void | Promise<void>;
+  provider: "netease" | "qq";
+}) {
+  const label = provider === "netease" ? "网易云音乐" : "QQ 音乐";
+  const [busy, setBusy] = useState(false);
+  const [loginType, setLoginType] = useState<"qq" | "wx">("wx");
+  const [qr, setQr] = useState<{ key: string; loginType?: "qq" | "wx"; qrImage: string; qrUrl: string } | null>(null);
+  const [status, setStatus] = useState(`${label}尚未扫码登录`);
 
-  const pluginRows = [
-    {
-      id: "daily-briefing" as const,
-      name: "每日早报",
-      desc: "ALAPI 每日早报采集，生成新闻播报节目。",
-      enabled: dailyBriefing.enabled,
-      detail: `名称：${dailyBriefing.name || "未设置"} · Endpoint：${dailyBriefing.apiBaseUrl ? "已配置" : "未配置"} · Token：${dailyBriefing.token ? "已配置" : "未配置"}`,
-      studioType: "daily-briefing" as ProgramType,
-    },
-    {
-      id: "hot-topics" as const,
-      name: "今日热榜",
-      desc: "ALAPI 热榜采集，生成热点话题节目。",
-      enabled: hotTopics.enabled,
-      detail: `名称：${hotTopics.name || "未设置"} · 类型：${hotTopics.type || "默认"} · Token：${hotTopics.token ? "已配置" : "沿用早报"}`,
-      studioType: "hot-topics" as ProgramType,
-    },
-    {
-      id: "kugou" as const,
-      name: "酷狗音乐",
-      desc: "音乐联播，支持扫码登录与手动选歌。",
-      enabled: kugou.enabled,
-      detail: `名称：${kugou.name || "未设置"} · 来源：${kugou.source || "new"} · Cookie：${kugou.cookie ? "已登录" : "未登录"}`,
-      studioType: "kugou" as ProgramType,
-    },
-  ];
+  const createQr = async (nextLoginType: "qq" | "wx" = loginType) => {
+    if (busy) {
+      return;
+    }
+    setBusy(true);
+    setStatus(`正在生成${label}二维码...`);
+    try {
+      const result = await apiJson<{ key: string; message?: string; qrImage: string; qrUrl: string }>(
+        `/api/plugins/music/${provider}/login/qr`,
+        {
+          body: JSON.stringify(provider === "qq" ? { type: nextLoginType } : {}),
+          headers: { "Content-Type": "application/json" },
+          method: "POST",
+        },
+      );
+      setLoginType(nextLoginType);
+      setQr({ key: result.key, loginType: nextLoginType, qrImage: result.qrImage, qrUrl: result.qrUrl });
+      setStatus(result.message ?? `${label}二维码已生成`);
+    } catch (error) {
+      setStatus(`${label}二维码生成失败：${errorMessage(error)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
 
-  const goStudio = (type: ProgramType) => {
-    onSectionChange("studio");
-    // 节目类型切换由 studio 页自身管理，这里仅跳转；用户到节目制作后手动选择类型。
-    window.setTimeout(() => {
-      const select = document.querySelector<HTMLSelectElement>('.admin-studio-type-select');
-      if (select) {
-        select.value = type;
-        select.dispatchEvent(new Event("change", { bubbles: true }));
+  useEffect(() => {
+    if (!qr?.key) {
+      return;
+    }
+    let stopped = false;
+    let timer = 0;
+    const key = qr.key;
+    const poll = async () => {
+      try {
+        const result = await apiJson<{ cookie?: string; message?: string; status: number }>(
+          `/api/plugins/music/${provider}/login/check`,
+          {
+            body: JSON.stringify({ key }),
+            headers: { "Content-Type": "application/json" },
+            method: "POST",
+          },
+        );
+        if (stopped) {
+          return;
+        }
+        if (result.status === 4) {
+          if (result.cookie) {
+            onCookie(result.cookie);
+          }
+          setStatus(result.message ?? `${label}登录成功，Cookie 已自动填入并保存`);
+          setQr(null);
+          await onLoggedIn?.();
+          return;
+        }
+        if (result.status === 0) {
+          setStatus(result.message ?? `${label}二维码已过期，请重新扫码`);
+          setQr(null);
+          return;
+        }
+        setStatus(`${result.message ?? "等待扫码"} · 正在自动检测`);
+      } catch (error) {
+        if (!stopped) {
+          setStatus(`扫码状态检测暂时失败，将继续重试：${errorMessage(error)}`);
+        }
       }
-    }, 60);
+      if (!stopped) {
+        timer = window.setTimeout(() => void poll(), 1800);
+      }
+    };
+    timer = window.setTimeout(() => void poll(), 700);
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+    };
+  }, [label, onCookie, onLoggedIn, provider, qr?.key]);
+
+  return (
+    <>
+      <div className="kugou-action-row">
+        <button disabled={busy} onClick={() => void createQr(provider === "qq" ? "wx" : "wx")} type="button">
+          {busy ? <Loader2 className="spin-icon" size={18} /> : <QrCode size={18} />}
+          <span>{provider === "qq" ? "微信扫码登录（推荐）" : "扫码登录"}</span>
+        </button>
+        {provider === "qq" ? (
+          <button disabled={busy} onClick={() => void createQr("qq")} type="button">
+            <QrCode size={18} />
+            <span>QQ 扫码登录</span>
+          </button>
+        ) : null}
+        {qr ? <span className="kugou-auto-check"><Loader2 className="spin-icon" size={17} />自动检测扫码状态</span> : null}
+      </div>
+      {qr ? (
+        <div className="kugou-qr-panel">
+          {qr.qrImage ? <img alt={`${label}扫码登录二维码`} src={qr.qrImage} /> : null}
+          <span>
+            <strong>二维码已生成</strong>
+            <small>{provider === "qq"
+              ? qr.loginType === "qq"
+                ? "请使用 QQ App 内置“扫一扫”，不要使用系统相机"
+                : "请使用微信“扫一扫”并在手机端确认"
+              : "请使用网易云音乐 App 扫码并确认"}</small>
+            {qr.qrUrl ? <a href={qr.qrUrl} rel="noreferrer" target="_blank">打开扫码链接</a> : null}
+          </span>
+        </div>
+      ) : null}
+      <p className="kugou-status">{status}</p>
+    </>
+  );
+}
+
+function MusicCookieHelp({ provider }: { provider: "netease" | "qq" }) {
+  const netease = provider === "netease";
+  return (
+    <details className="music-cookie-help">
+      <summary>扫码受限？查看手动获取 Cookie 方法</summary>
+      <div>
+        <p>
+          {netease
+            ? "网易云可能按账号或设备触发风控。遇到“设备环境异常”时，可直接使用已登录浏览器的 Cookie。"
+            : "扫码无法完成时，可从已登录 QQ 音乐网页版复制 Cookie，不需要打开二维码里的下载页。"}
+        </p>
+        <ol>
+          <li>在电脑浏览器打开并登录 <a href={netease ? "https://music.163.com/" : "https://y.qq.com/"} rel="noreferrer" target="_blank">{netease ? "网易云音乐网页版" : "QQ 音乐网页版"}</a>。</li>
+          <li>按 F12 打开开发者工具，在“网络 / Network”中刷新页面，点开任意 music 请求。</li>
+          <li>复制“请求标头 / Request Headers”里的完整 Cookie，粘贴到上方 Cookie 输入框，再保存接口配置。</li>
+        </ol>
+        <small>
+          {netease
+            ? "至少应包含 MUSIC_U；建议保留 __csrf、NMTID 等同域字段。"
+            : "至少应包含 uin，以及 qm_keyst 或 qqmusic_key；请勿把 Cookie 发给他人。"}
+        </small>
+      </div>
+    </details>
+  );
+}
+
+function AdminPluginPage(props: AdminShellProps) {
+  const {
+    adminConfig,
+    configTestStatus,
+    kugouLoginBusy,
+    kugouQr,
+    kugouStatus,
+    onAdminConfigChange,
+    onAdminConfigSave,
+    onKugouQrCreate,
+    onKugouStatusRefresh,
+    onSectionChange,
+    onTestService,
+  } = props;
+  const daily = adminConfig.plugins.dailyBriefing;
+  const hot = adminConfig.plugins.hotTopics;
+  const kugou = adminConfig.plugins.kugouMusic;
+  const netease = adminConfig.plugins.neteaseMusic;
+  const qq = adminConfig.plugins.qqMusic;
+  const [musicApiStatus, setMusicApiStatus] = useState<Array<{
+    authenticated: boolean;
+    enabled: boolean;
+    id: string;
+    installed: boolean;
+    message: string;
+    name: string;
+  }>>([]);
+
+  const refreshMusicApiStatus = useCallback(async () => {
+    try {
+      const data = await apiJson<{ sources: typeof musicApiStatus }>("/api/plugins/music/status");
+      setMusicApiStatus(data.sources ?? []);
+    } catch {
+      setMusicApiStatus([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshMusicApiStatus();
+  }, [refreshMusicApiStatus]);
+
+  const sourceStatus = (id: string) => musicApiStatus.find((source) => source.id === id);
+  const saveAndRefresh = async () => {
+    await onAdminConfigSave();
+    await refreshMusicApiStatus();
   };
 
   return (
     <section className="admin-page">
       <div className="admin-page-title admin-page-title--with-action">
         <div>
-          <span>采集插件</span>
-          <h1>插件状态总览</h1>
-          <p>各插件的配置已迁移到「节目制作」，在这里可快速查看启用状态并跳转。</p>
+          <span>接口 API</span>
+          <h1>只管理接口连接与凭据</h1>
+          <p>节目名称、主播、条数、榜单类型、选歌和混音等业务设置已移到“节目制作”。{configTestStatus.plugins ? ` 当前状态：${configTestStatus.plugins}` : ""}</p>
         </div>
-        <button className="admin-primary-button" onClick={onAdminConfigSave} type="button">
-          <Save size={18} />
-          <span>保存配置</span>
-        </button>
+        <div className="api-page-actions">
+          <button onClick={() => onTestService("plugins")} type="button"><ShieldCheck size={17} /><span>检查完整性</span></button>
+          <button className="admin-primary-button" onClick={saveAndRefresh} type="button"><Save size={18} /><span>保存接口配置</span></button>
+        </div>
       </div>
-      <div className="admin-plugin-grid">
-        {pluginRows.map((row) => (
-          <section className="admin-card" key={row.id}>
-            <h2>{row.name}</h2>
-            <div className="plugin-overview-row">
-              <span className={`plugin-overview-dot plugin-overview-dot--${row.enabled ? "on" : "off"}`} />
-              <strong>{row.enabled ? "已启用" : "已停用"}</strong>
-            </div>
-            <p className="plugin-overview-desc">{row.desc}</p>
-            <p className="plugin-overview-detail">{row.detail}</p>
-            <button className="admin-primary-button" onClick={() => goStudio(row.studioType)} type="button">
-              <WandSparkles size={16} />
-              <span>到节目制作配置</span>
-            </button>
-          </section>
-        ))}
+
+      <div className="api-config-grid">
+        <section className="admin-card api-config-section">
+          <div className="api-config-head">
+            <span><Newspaper size={21} /></span>
+            <div><h2>每日早报 API</h2><p>ALAPI 连接地址与访问令牌。</p></div>
+            <i className={`status-dot status-dot--${daily.enabled ? "good" : "bad"}`} />
+          </div>
+          <div className="config-grid config-grid--compact">
+            <ConfigField label="启用接口"><label className="admin-switch"><input checked={daily.enabled} onChange={(event) => onAdminConfigChange("plugins", "dailyBriefing", { ...daily, enabled: event.target.checked })} type="checkbox" /><span>{daily.enabled ? "已启用" : "已停用"}</span></label></ConfigField>
+            <ConfigField label="API Endpoint"><input value={daily.apiBaseUrl} onChange={(event) => onAdminConfigChange("plugins", "dailyBriefing", { ...daily, apiBaseUrl: event.target.value })} /></ConfigField>
+            <ConfigField hint="凭据保存在服务端 SQLite。" label="ALAPI Token"><input autoComplete="off" type="password" value={daily.token} onChange={(event) => onAdminConfigChange("plugins", "dailyBriefing", { ...daily, token: event.target.value })} /></ConfigField>
+          </div>
+        </section>
+
+        <section className="admin-card api-config-section">
+          <div className="api-config-head">
+            <span><Flame size={21} /></span>
+            <div><h2>今日热榜 API</h2><p>ALAPI 连接地址与访问令牌。</p></div>
+            <i className={`status-dot status-dot--${hot.enabled ? "good" : "bad"}`} />
+          </div>
+          <div className="config-grid config-grid--compact">
+            <ConfigField label="启用接口"><label className="admin-switch"><input checked={hot.enabled} onChange={(event) => onAdminConfigChange("plugins", "hotTopics", { ...hot, enabled: event.target.checked })} type="checkbox" /><span>{hot.enabled ? "已启用" : "已停用"}</span></label></ConfigField>
+            <ConfigField label="API Endpoint"><input value={hot.apiBaseUrl} onChange={(event) => onAdminConfigChange("plugins", "hotTopics", { ...hot, apiBaseUrl: event.target.value })} /></ConfigField>
+            <ConfigField hint="留空时沿用每日早报 Token。" label="ALAPI Token"><input autoComplete="off" placeholder="留空沿用早报 Token" type="password" value={hot.token} onChange={(event) => onAdminConfigChange("plugins", "hotTopics", { ...hot, token: event.target.value })} /></ConfigField>
+          </div>
+        </section>
       </div>
+
+      <div className="music-api-grid">
+        <section className="admin-card api-config-section music-api-card">
+          <div className="api-config-head">
+            <span><Disc3 size={21} /></span>
+            <div><h2>酷狗音乐 API</h2><p>本地模块 KuGouMusicApi · 支持扫码登录。</p></div>
+            <i className={`status-dot status-dot--${sourceStatus("kugou")?.installed && kugou.apiEnabled ? "good" : "bad"}`} />
+          </div>
+          <div className="config-grid config-grid--compact">
+            <ConfigField label="启用接口"><label className="admin-switch"><input checked={kugou.apiEnabled} onChange={(event) => onAdminConfigChange("plugins", "kugouMusic", { ...kugou, apiEnabled: event.target.checked })} type="checkbox" /><span>{kugou.apiEnabled ? "已启用" : "已停用"}</span></label></ConfigField>
+            <ConfigField label="本地模块"><input readOnly value="KuGouMusicApi/main.js" /></ConfigField>
+            <ConfigField label="酷狗 Cookie"><input autoComplete="off" type="password" value={kugou.cookie} onChange={(event) => onAdminConfigChange("plugins", "kugouMusic", { ...kugou, cookie: event.target.value })} /></ConfigField>
+          </div>
+          <div className="kugou-action-row">
+            <button type="button" onClick={onKugouStatusRefresh}><RefreshCw size={18} /><span>检测登录态</span></button>
+            <button disabled={kugouLoginBusy} type="button" onClick={onKugouQrCreate}>{kugouLoginBusy ? <Loader2 className="spin-icon" size={18} /> : <QrCode size={18} />}<span>扫码登录</span></button>
+            {kugouQr ? <span className="kugou-auto-check"><Loader2 className="spin-icon" size={17} />自动检测扫码状态</span> : null}
+          </div>
+          {kugouQr ? <div className="kugou-qr-panel">{kugouQr.qrImage ? <img alt="酷狗扫码登录二维码" src={kugouQr.qrImage} /> : null}<span><strong>二维码已生成</strong>{kugouQr.qrUrl ? <a href={kugouQr.qrUrl} target="_blank" rel="noreferrer">打开扫码链接</a> : null}</span></div> : null}
+          <p className="kugou-status">{kugouStatus}</p>
+        </section>
+
+        <section className="admin-card api-config-section music-api-card">
+          <div className="api-config-head">
+            <span><Music2 size={21} /></span>
+            <div><h2>网易云音乐 API</h2><p>本地模块 NeteaseCloudMusicApi · 支持扫码自动获取 Cookie。</p></div>
+            <i className={`status-dot status-dot--${sourceStatus("netease")?.installed && netease.enabled ? "good" : "bad"}`} />
+          </div>
+          <div className="config-grid config-grid--compact">
+            <ConfigField label="启用接口"><label className="admin-switch"><input checked={netease.enabled} onChange={(event) => onAdminConfigChange("plugins", "neteaseMusic", { ...netease, enabled: event.target.checked })} type="checkbox" /><span>{netease.enabled ? "已启用" : "已停用"}</span></label></ConfigField>
+            <ConfigField label="本地模块"><input readOnly value="NeteaseCloudMusicApi/main.js" /></ConfigField>
+            <ConfigField hint="扫码成功后自动回填并保存；也支持手动填写。" label="网易云 Cookie"><input autoComplete="off" type="password" value={netease.cookie} onChange={(event) => onAdminConfigChange("plugins", "neteaseMusic", { ...netease, cookie: event.target.value })} /></ConfigField>
+          </div>
+          <MusicSourceQrLogin
+            onCookie={(cookie) => onAdminConfigChange("plugins", "neteaseMusic", { ...netease, cookie })}
+            onLoggedIn={refreshMusicApiStatus}
+            provider="netease"
+          />
+          <MusicCookieHelp provider="netease" />
+          <p className="kugou-status">模块状态：{sourceStatus("netease")?.message ?? "等待检测本地 API"}</p>
+        </section>
+
+        <section className="admin-card api-config-section music-api-card">
+          <div className="api-config-head">
+            <span><Headphones size={21} /></span>
+            <div><h2>QQ 音乐 API</h2><p>本地模块 QQMusicApi · 支持微信或 QQ 扫码自动获取 Cookie。</p></div>
+            <i className={`status-dot status-dot--${sourceStatus("qq")?.installed && qq.enabled ? "good" : "bad"}`} />
+          </div>
+          <div className="config-grid config-grid--compact">
+            <ConfigField label="启用接口"><label className="admin-switch"><input checked={qq.enabled} onChange={(event) => onAdminConfigChange("plugins", "qqMusic", { ...qq, enabled: event.target.checked })} type="checkbox" /><span>{qq.enabled ? "已启用" : "已停用"}</span></label></ConfigField>
+            <ConfigField label="本地模块"><input readOnly value="QQMusicApi/node/index.js" /></ConfigField>
+            <ConfigField hint="扫码成功后自动回填并保存；付费歌曲仍受账号权益限制。" label="QQ 音乐 Cookie"><input autoComplete="off" type="password" value={qq.cookie} onChange={(event) => onAdminConfigChange("plugins", "qqMusic", { ...qq, cookie: event.target.value })} /></ConfigField>
+          </div>
+          <MusicSourceQrLogin
+            onCookie={(cookie) => onAdminConfigChange("plugins", "qqMusic", { ...qq, cookie })}
+            onLoggedIn={refreshMusicApiStatus}
+            provider="qq"
+          />
+          <MusicCookieHelp provider="qq" />
+          <p className="kugou-status">模块状态：{sourceStatus("qq")?.message ?? "等待检测本地 API"}</p>
+        </section>
+      </div>
+
+      <section className="admin-card api-page-footer">
+        <span>接口页只负责连接与凭据；节目内容、主播、条数、音乐来源和选歌规则请在节目制作设置。</span>
+        <button onClick={() => onSectionChange("studio")} type="button"><WandSparkles size={16} /><span>前往节目制作</span></button>
+      </section>
+    </section>
+  );
+}
+
+function LegacyAdminPluginPage(props: AdminShellProps) {
+  const {
+    adminConfig,
+    configTestStatus,
+    kugouApiBusy,
+    kugouApiName,
+    kugouApiParams,
+    kugouApiResult,
+    kugouLoginBusy,
+    kugouQr,
+    kugouStatus,
+    manualMusicQuery,
+    manualMusicResults,
+    manualMusicSearchBusy,
+    manualMusicSelected,
+    manualMusicStatus,
+    onAdminConfigChange,
+    onAdminConfigSave,
+    onKugouApiCall,
+    onKugouApiNameChange,
+    onKugouApiParamsChange,
+    onKugouQrCreate,
+    onKugouStatusRefresh,
+    onManualMusicAdd,
+    onManualMusicQueryChange,
+    onManualMusicRemove,
+    onManualMusicReorder,
+    onManualMusicSearch,
+    onSectionChange,
+    onTestService,
+    soundEffectCategories,
+  } = props;
+  const dailyBriefing = adminConfig.plugins.dailyBriefing;
+  const hotTopics = adminConfig.plugins.hotTopics;
+  const kugou = adminConfig.plugins.kugouMusic;
+  const updateDaily = (patch: Partial<typeof dailyBriefing>) =>
+    onAdminConfigChange("plugins", "dailyBriefing", { ...dailyBriefing, ...patch });
+  const updateHotTopics = (patch: Partial<typeof hotTopics>) =>
+    onAdminConfigChange("plugins", "hotTopics", { ...hotTopics, ...patch });
+
+  return (
+    <section className="admin-page">
+      <div className="admin-page-title admin-page-title--with-action">
+        <div>
+          <span>接口 API</span>
+          <h1>内容数据与音乐接口</h1>
+          <p>每日早报、今日热榜和酷狗音乐的连接、凭据与高级调用统一在这里维护。{configTestStatus.plugins ? ` 当前状态：${configTestStatus.plugins}` : ""}</p>
+        </div>
+        <div className="api-page-actions">
+          <button onClick={() => onTestService("plugins")} type="button"><ShieldCheck size={17} /><span>检查完整性</span></button>
+          <button className="admin-primary-button" onClick={onAdminConfigSave} type="button"><Save size={18} /><span>保存接口配置</span></button>
+        </div>
+      </div>
+
+      <div className="api-config-grid">
+        <section className="admin-card api-config-section">
+          <div className="api-config-head">
+            <span><Newspaper size={21} /></span>
+            <div><h2>每日早报 API</h2><p>ALAPI 早报内容采集及播报参数。</p></div>
+            <i className={`status-dot status-dot--${dailyBriefing.enabled ? "good" : "bad"}`} />
+          </div>
+          <div className="config-grid config-grid--compact">
+            <ConfigField label="启用接口"><label className="admin-switch"><input checked={dailyBriefing.enabled} onChange={(event) => updateDaily({ enabled: event.target.checked })} type="checkbox" /><span>{dailyBriefing.enabled ? "已启用" : "已停用"}</span></label></ConfigField>
+            <ConfigField label="节目名称"><input value={dailyBriefing.name} onChange={(event) => updateDaily({ name: event.target.value })} /></ConfigField>
+            <ConfigField label="API Endpoint"><input value={dailyBriefing.apiBaseUrl} onChange={(event) => updateDaily({ apiBaseUrl: event.target.value })} /></ConfigField>
+            <ConfigField hint="凭据仅保存在服务端 SQLite。" label="ALAPI Token"><input autoComplete="off" type="password" value={dailyBriefing.token} onChange={(event) => updateDaily({ token: event.target.value })} /></ConfigField>
+            <ConfigField label="播报主播"><select value={dailyBriefing.hostId} onChange={(event) => updateDaily({ hostId: event.target.value })}>{hosts.map((host) => <option key={host.id} value={host.id}>{host.name}</option>)}</select></ConfigField>
+            <ConfigField label="最多条数"><input max={30} min={3} type="number" value={dailyBriefing.maxItems} onChange={(event) => updateDaily({ maxItems: Number(event.target.value) })} /></ConfigField>
+            <ConfigField label="播报速度"><input max={2} min={0.5} step={0.05} type="number" value={dailyBriefing.playbackSpeed} onChange={(event) => updateDaily({ playbackSpeed: clampNumber(event.target.value, 0.5, 2, 1) })} /></ConfigField>
+          </div>
+          <AudioMixEditor audioMix={dailyBriefing.audioMix} onChange={(audioMix) => updateDaily({ audioMix })} soundEffectCategories={soundEffectCategories} title="每日早报背景音" />
+        </section>
+
+        <section className="admin-card api-config-section">
+          <div className="api-config-head">
+            <span><Flame size={21} /></span>
+            <div><h2>今日热榜 API</h2><p>ALAPI 热榜数据采集、榜单类型及播报参数。</p></div>
+            <i className={`status-dot status-dot--${hotTopics.enabled ? "good" : "bad"}`} />
+          </div>
+          <div className="config-grid config-grid--compact">
+            <ConfigField label="启用接口"><label className="admin-switch"><input checked={hotTopics.enabled} onChange={(event) => updateHotTopics({ enabled: event.target.checked })} type="checkbox" /><span>{hotTopics.enabled ? "已启用" : "已停用"}</span></label></ConfigField>
+            <ConfigField label="节目名称"><input value={hotTopics.name} onChange={(event) => updateHotTopics({ name: event.target.value })} /></ConfigField>
+            <ConfigField label="API Endpoint"><input value={hotTopics.apiBaseUrl} onChange={(event) => updateHotTopics({ apiBaseUrl: event.target.value })} /></ConfigField>
+            <ConfigField hint="留空时沿用每日早报 Token。" label="ALAPI Token"><input autoComplete="off" placeholder="留空沿用早报 Token" type="password" value={hotTopics.token} onChange={(event) => updateHotTopics({ token: event.target.value })} /></ConfigField>
+            <ConfigField label="热榜类型"><input placeholder="weibo" value={hotTopics.type} onChange={(event) => updateHotTopics({ type: event.target.value })} /></ConfigField>
+            <ConfigField label="播报主播"><select value={hotTopics.hostId} onChange={(event) => updateHotTopics({ hostId: event.target.value })}>{hosts.map((host) => <option key={host.id} value={host.id}>{host.name}</option>)}</select></ConfigField>
+            <ConfigField label="最多条数"><input max={30} min={3} type="number" value={hotTopics.maxItems} onChange={(event) => updateHotTopics({ maxItems: Number(event.target.value) })} /></ConfigField>
+            <ConfigField label="播报速度"><input max={2} min={0.5} step={0.05} type="number" value={hotTopics.playbackSpeed} onChange={(event) => updateHotTopics({ playbackSpeed: clampNumber(event.target.value, 0.5, 2, 1) })} /></ConfigField>
+          </div>
+          <AudioMixEditor audioMix={hotTopics.audioMix} onChange={(audioMix) => updateHotTopics({ audioMix })} soundEffectCategories={soundEffectCategories} title="今日热榜背景音" />
+        </section>
+      </div>
+
+      <section className="admin-card api-config-section api-config-section--kugou">
+        <div className="api-config-head">
+          <span><Disc3 size={21} /></span>
+          <div><h2>酷狗音乐 API</h2><p>音乐来源、登录 Cookie、扫码登录、歌曲搜索与高级 API 调用。</p></div>
+          <i className={`status-dot status-dot--${kugou.enabled ? "good" : "bad"}`} />
+        </div>
+        <KugouConfigPanel
+          adminConfig={adminConfig}
+          kugou={kugou}
+          onAdminConfigChange={onAdminConfigChange}
+          kugouApiBusy={kugouApiBusy}
+          kugouApiName={kugouApiName}
+          kugouApiParams={kugouApiParams}
+          kugouApiResult={kugouApiResult}
+          kugouLoginBusy={kugouLoginBusy}
+          kugouQr={kugouQr}
+          kugouStatus={kugouStatus}
+          manualMusicQuery={manualMusicQuery}
+          manualMusicResults={manualMusicResults}
+          manualMusicSearchBusy={manualMusicSearchBusy}
+          manualMusicSelected={manualMusicSelected}
+          manualMusicStatus={manualMusicStatus}
+          onKugouApiCall={onKugouApiCall}
+          onKugouApiNameChange={onKugouApiNameChange}
+          onKugouApiParamsChange={onKugouApiParamsChange}
+          onKugouQrCreate={onKugouQrCreate}
+          onKugouStatusRefresh={onKugouStatusRefresh}
+          onManualMusicAdd={onManualMusicAdd}
+          onManualMusicQueryChange={onManualMusicQueryChange}
+          onManualMusicRemove={onManualMusicRemove}
+          onManualMusicReorder={onManualMusicReorder}
+          onManualMusicSearch={onManualMusicSearch}
+        />
+      </section>
+
+      <section className="admin-card api-page-footer">
+        <span>接口保存后，到节目制作选择对应节目类型即可生成；自定义音乐歌单请在“音乐连播”管理。</span>
+        <button onClick={() => onSectionChange("studio")} type="button"><WandSparkles size={16} /><span>前往节目制作</span></button>
+      </section>
     </section>
   );
 }
@@ -9242,6 +11403,7 @@ function SecondaryPage({
   programHostIds,
   programHistory,
   programPlaybackSpeed,
+  programPushBusyId,
   programPrompt,
   programScheduledTime,
   playing,
@@ -9257,8 +11419,12 @@ function SecondaryPage({
   const serviceHealth = (service: "llm" | "tts" | "suno") => {
     const config = adminConfig[service];
     const status = configTestStatus[service];
-    const missingApiKey = service === "tts" && ttsApiKeyOptional(adminConfig.tts) ? false : !String(config.apiKey ?? "").trim();
-    const missingEndpoint = service === "tts" && adminConfig.tts.engine === "local" ? false : !String(config.baseUrl ?? "").trim();
+    const missingApiKey = service === "suno"
+      ? !String(adminConfig.suno.cookie ?? "").trim()
+      : service === "tts" && ttsApiKeyOptional(adminConfig.tts)
+        ? false
+        : !String((config as LlmConfig | TtsConfig).apiKey ?? "").trim();
+    const missingEndpoint = !String(config.baseUrl ?? "").trim();
     const missingConfig =
       missingEndpoint ||
       missingApiKey ||
@@ -9401,7 +11567,7 @@ function SecondaryPage({
                 </div>
               ))
             ) : (
-              <div className="empty-state">还没有可播的歌单连播节目，请先在后台采集插件生成。</div>
+              <div className="empty-state">还没有可播的歌单连播节目，请先在后台“接口 API”配置音乐来源并生成。</div>
             )}
           </div>
         </section>
@@ -9515,7 +11681,7 @@ function SecondaryPage({
                 ))}
               </div>
               <div className="ai-action-row">
-                <button disabled={programBusy} onClick={onGenerateProgram} type="button">
+                <button disabled={programBusy} onClick={() => onGenerateProgram()} type="button">
                   {programBusy ? <Loader2 className="spin-icon" size={20} /> : <FileAudio size={20} />}
                   <span>{programBusy ? "正在生成" : "生成节目"}</span>
                 </button>
@@ -9585,7 +11751,7 @@ function SecondaryPage({
                     onChange={(event) => onProgramDraftChange(event.target.value)}
                   />
                   <div className="program-edit-actions">
-                    <button onClick={onProgramSaveDraft} type="button">
+                    <button onClick={() => onProgramSaveDraft()} type="button">
                       <Save size={18} />
                       <span>保存改稿</span>
                     </button>
@@ -9593,17 +11759,17 @@ function SecondaryPage({
                       {programRewriteBusy ? <Loader2 className="spin-icon" size={18} /> : <Sparkles size={18} />}
                       <span>{programRewriteBusy ? "重编中" : "AI重编早报"}</span>
                     </button>
-                    <button className="is-primary" disabled={programTtsBusy} onClick={onProgramRegenerateTts} type="button">
+                    <button className="is-primary" disabled={programTtsBusy} onClick={() => onProgramRegenerateTts()} type="button">
                       {programTtsBusy ? <Loader2 className="spin-icon" size={18} /> : <RefreshCw size={18} />}
                       <span>{programTtsBusy ? "重配音中" : "重新生成语音"}</span>
                     </button>
                     <button
-                      disabled={publishBusy || generatedProgram.status !== "ready" || !generatedProgram.audioUrl}
+                      disabled={programPushBusyId === generatedProgram.id}
                       onClick={() => onProgramPushHome(generatedProgram.id)}
                       type="button"
                     >
-                      {publishBusy ? <Loader2 className="spin-icon" size={18} /> : <Radio size={18} />}
-                      <span>{publishBusy ? "调整中" : "立即推送"}</span>
+                      {programPushBusyId === generatedProgram.id ? <Loader2 className="spin-icon" size={18} /> : <Radio size={18} />}
+                      <span>{programPushBusyId === generatedProgram.id ? "更新并推送中" : "立即推送"}</span>
                     </button>
                     <button className="is-danger" onClick={() => onDeleteProgram(generatedProgram.id)} type="button">
                       <Trash2 size={18} />
@@ -9681,7 +11847,7 @@ function SecondaryPage({
                   onScheduleSave={onProgramScheduleSave}
                   onSelect={onProgramSelect}
                   program={program}
-                  publishBusy={publishBusy}
+                  pushBusy={programPushBusyId === program.id}
                   scheduleDraft={scheduleDrafts[program.id] ?? toDatetimeLocalValue(program.scheduledAt)}
                 />
               ))
@@ -9936,7 +12102,7 @@ function ProgramTimelineRow({
   onScheduleSave,
   onSelect,
   program,
-  publishBusy,
+  pushBusy,
   scheduleDraft,
 }: {
   categories: ProgramCategory[];
@@ -9950,7 +12116,7 @@ function ProgramTimelineRow({
   onScheduleSave: (programId: string) => void | Promise<void>;
   onSelect: (program: ProgramRecord) => void;
   program: ProgramRecord;
-  publishBusy: boolean;
+  pushBusy: boolean;
   scheduleDraft: string;
 }) {
   const [title, setTitle] = useState(program.title);
@@ -9980,7 +12146,7 @@ function ProgramTimelineRow({
         <span>
           <strong>{program.title}</strong>
           <small>
-            {program.categoryName ?? "未分类"} · {program.host} · {program.status === "ready" ? "语音已生成" : "仅文案"} ·{" "}
+            {program.categoryName ?? "未分类"} · {program.host} · {program.status === "ready" ? "语音已生成" : program.status === "generating" ? "后台生成中" : program.status === "failed" ? "生成失败" : "仅文案"} ·{" "}
             {program.publishDate ? `已发布 ${program.publishDate} · ` : ""}
             {program.scheduledAt
               ? `时间线 ${new Date(program.scheduledAt).toLocaleString("zh-CN", { hour12: false, timeZone: "Asia/Shanghai" })}`
@@ -10029,8 +12195,8 @@ function ProgramTimelineRow({
         <button onClick={() => onScheduleSave(program.id)} type="button">
           定时
         </button>
-        <button disabled={publishBusy || program.status !== "ready" || !program.audioUrl} onClick={() => onPushHome(program.id)} type="button">
-          {publishBusy ? "调整中" : "立即推送"}
+        <button disabled={pushBusy} onClick={() => onPushHome(program.id)} type="button">
+          {pushBusy ? "更新并推送中" : "立即推送"}
         </button>
         <button className="is-danger" onClick={() => onDelete(program.id)} title="删除节目" type="button">
           <Trash2 size={16} />
@@ -10098,6 +12264,7 @@ function AdminConfigPage({
   status: Record<ServiceKey, string>;
 }) {
   const savedLabel = savedAt ? new Date(savedAt).toLocaleString("zh-CN", { hour12: false, timeZone: "Asia/Shanghai" }) : "尚未保存";
+  const [activeModelSection, setActiveModelSection] = useState<"llm" | "tts" | "suno">("llm");
   const applyTtsPreset = (preset: (typeof ttsEnginePresets)[number]) => {
     onChange("tts", "engine", preset.engine);
     onChange("tts", "provider", preset.provider);
@@ -10112,11 +12279,11 @@ function AdminConfigPage({
       <section className="page-hero page-hero--admin">
         <div>
           <span className="page-kicker">
-            <ServerCog size={18} />
-            后台配置管理
+            <BrainCircuit size={18} />
+            模型配置
           </span>
-          <h1>统一管理 AI 电台的模型、语音和音乐生成接口</h1>
-          <p>配置大模型 API、通用语音接口与 SUNO 音乐生成网站 API。保存后会同步到本地后台 SQLite 数据库，节目生成流程会由后台读取配置并调用接口。</p>
+          <h1>统一管理内容、语音与音乐生成模型</h1>
+          <p>按“内容生成 → 语音合成 → 音乐生成”分区配置。每个分区独立检测，确认后统一保存。</p>
         </div>
         <button className="page-primary-action" onClick={onSave} type="button">
           <Save size={22} />
@@ -10128,7 +12295,6 @@ function AdminConfigPage({
         <ServiceStatusCard icon={<BrainCircuit size={21} />} label="大模型 API" status={status.llm} />
         <ServiceStatusCard icon={<Bot size={21} />} label="通用语音接口" status={status.tts} />
         <ServiceStatusCard icon={<Globe2 size={21} />} label="SUNO 生成 API" status={status.suno} />
-        <ServiceStatusCard icon={<Puzzle size={21} />} label="采集插件" status={status.plugins} />
         <div className="service-status service-status--saved">
           <span>
             <ShieldCheck size={21} />
@@ -10138,7 +12304,19 @@ function AdminConfigPage({
         </div>
       </section>
 
-      <section className="panel admin-panel admin-panel--wide">
+      <section className="model-config-tabs" aria-label="模型配置分区">
+        <button className={activeModelSection === "llm" ? "is-active" : ""} onClick={() => setActiveModelSection("llm")} type="button">
+          <BrainCircuit size={19} /><span><strong>1. 内容生成</strong><small>文案模型、参数与系统提示词</small></span>
+        </button>
+        <button className={activeModelSection === "tts" ? "is-active" : ""} onClick={() => setActiveModelSection("tts")} type="button">
+          <Bot size={19} /><span><strong>2. 语音合成</strong><small>服务适配、音色与默认语气</small></span>
+        </button>
+        <button className={activeModelSection === "suno" ? "is-active" : ""} onClick={() => setActiveModelSection("suno")} type="button">
+          <Globe2 size={19} /><span><strong>3. 音乐生成</strong><small>SUNO 连接与生成默认值</small></span>
+        </button>
+      </section>
+
+      {activeModelSection === "llm" ? <section className="panel admin-panel admin-panel--wide model-config-panel">
         <div className="admin-panel-title">
           <h2>
             <BrainCircuit size={22} />
@@ -10210,9 +12388,9 @@ function AdminConfigPage({
             />
           </ConfigField>
         </div>
-      </section>
+      </section> : null}
 
-      <section className="panel admin-panel">
+      {activeModelSection === "tts" ? <section className="panel admin-panel model-config-panel">
         <div className="admin-panel-title">
           <h2>
             <Bot size={22} />
@@ -10249,7 +12427,6 @@ function AdminConfigPage({
           <ConfigField hint="不同引擎请求格式不同，需选择对应适配器。" label="引擎类型">
             <select value={config.tts.engine} onChange={(event) => onChange("tts", "engine", event.target.value)}>
               <option value="openai-compatible">通用 / OpenAI 兼容</option>
-              <option value="local">本机兜底语音</option>
               <option value="mimo">小米 MiMo</option>
               <option value="azure">Azure Speech</option>
               <option value="google">Google Cloud TTS</option>
@@ -10260,7 +12437,6 @@ function AdminConfigPage({
             <select value={config.tts.provider} onChange={(event) => onChange("tts", "provider", event.target.value)}>
               <option>OpenAI / 网关兼容</option>
               <option>通用语音接口</option>
-              <option>Linux 本机语音</option>
               <option>OpenAI TTS Compatible</option>
               <option>小米 MiMo TTS</option>
               <option>OpenAI TTS</option>
@@ -10309,6 +12485,24 @@ function AdminConfigPage({
               onChange={(event) => onChange("tts", "speed", Number(event.target.value))}
             />
           </ConfigField>
+          <ConfigField hint="节目制作页面会默认带入，单次制作时仍可修改。" label="默认配音语气">
+            <textarea
+              rows={3}
+              value={config.tts.defaultStylePrompt}
+              onChange={(event) => onChange("tts", "defaultStylePrompt", event.target.value)}
+            />
+          </ConfigField>
+          <ConfigField hint="每行一条；会显示在节目制作的语气预设下拉框中。" label="配音语气预设">
+            <textarea
+              rows={6}
+              value={(config.tts.stylePresets ?? []).join("\n")}
+              onChange={(event) => onChange(
+                "tts",
+                "stylePresets",
+                event.target.value.split("\n").map((item) => item.trim()).filter(Boolean),
+              )}
+            />
+          </ConfigField>
         </div>
         <div className="voice-map-panel">
           <div className="voice-map-title">
@@ -10340,18 +12534,21 @@ function AdminConfigPage({
             ))}
           </div>
         </div>
-      </section>
+      </section> : null}
 
-      <section className="panel admin-panel">
+      {activeModelSection === "suno" ? <section className="panel admin-panel model-config-panel">
         <div className="admin-panel-title">
           <h2>
             <Globe2 size={22} />
-            SUNO 音乐生成网站 API
+            本地 suno-api
           </h2>
           <button onClick={() => onTest("suno")} type="button">
-            检测配置
+            检测 Cookie 与配额
           </button>
         </div>
+        <p className="model-config-description">
+          使用项目目录中的 suno-api 对接 Suno Custom Mode，支持原创歌曲生成、歌词生成、任务查询、续写、分轨和歌词时间轴等主要能力。
+        </p>
         <div className="config-grid config-grid--compact">
           <ConfigField label="启用服务">
             <label className="admin-switch">
@@ -10363,64 +12560,62 @@ function AdminConfigPage({
               <span>{config.suno.enabled ? "已启用" : "已停用"}</span>
             </label>
           </ConfigField>
-          <ConfigField label="API Base URL">
+          <ConfigField hint="本机 3000 端口已被占用，Suno 服务固定使用 3010。" label="本地服务地址">
             <input value={config.suno.baseUrl} onChange={(event) => onChange("suno", "baseUrl", event.target.value)} />
           </ConfigField>
-          <ConfigField label="生成接口路径">
-            <input
-              value={config.suno.generatePath}
-              onChange={(event) => onChange("suno", "generatePath", event.target.value)}
+          <ConfigField hint="可粘贴 Request Cookie，也可直接粘贴四段 Set-Cookie；保存时会自动去除 Path、Secure、SameSite 等属性。" label="Suno Cookie">
+            <textarea
+              autoComplete="off"
+              placeholder="__client=...; __client_uat=...; ..."
+              rows={5}
+              value={config.suno.cookie}
+              onChange={(event) => onChange("suno", "cookie", event.target.value)}
             />
           </ConfigField>
-          <ConfigField label="API Key">
+          <ConfigField hint="Suno 当前生成请求会触发 hCaptcha；本地 suno-api 必须通过 2Captcha 获取一次性验证 token。" label="2Captcha API Key（生成必需）">
             <input
               autoComplete="off"
+              placeholder="可先留空；出现 CAPTCHA 提示时必须填写"
               type="password"
-              value={config.suno.apiKey}
-              onChange={(event) => onChange("suno", "apiKey", event.target.value)}
+              value={config.suno.captchaKey}
+              onChange={(event) => onChange("suno", "captchaKey", event.target.value)}
             />
           </ConfigField>
           <ConfigField label="模型 / 版本">
-            <input value={config.suno.model} onChange={(event) => onChange("suno", "model", event.target.value)} />
-          </ConfigField>
-          <ConfigField label="最大并发队列">
-            <input
-              max={10}
-              min={1}
-              type="number"
-              value={config.suno.maxQueue}
-              onChange={(event) => onChange("suno", "maxQueue", Number(event.target.value))}
-            />
-          </ConfigField>
-          <ConfigField label="回调 URL">
-            <input
-              placeholder="https://example.com/api/suno/callback"
-              value={config.suno.callbackUrl}
-              onChange={(event) => onChange("suno", "callbackUrl", event.target.value)}
-            />
-          </ConfigField>
-          <ConfigField label="默认风格">
-            <input value={config.suno.style} onChange={(event) => onChange("suno", "style", event.target.value)} />
-          </ConfigField>
-          <ConfigField label="默认生成提示词">
-            <textarea
-              value={config.suno.defaultPrompt}
-              onChange={(event) => onChange("suno", "defaultPrompt", event.target.value)}
-            />
-          </ConfigField>
-          <ConfigField label="纯音乐模式">
-            <label className="admin-switch">
-              <input
-                checked={config.suno.instrumental}
-                onChange={(event) => onChange("suno", "instrumental", event.target.checked)}
-                type="checkbox"
-              />
-              <span>{config.suno.instrumental ? "纯音乐" : "含人声"}</span>
-            </label>
+            <select value={config.suno.model} onChange={(event) => onChange("suno", "model", event.target.value)}>
+              <option value="auto">自动匹配账号（付费 v5.5 / 免费 v4.5）</option>
+              <option value="chirp-fenix">v5.5 · Pro / Premier（chirp-fenix）</option>
+              <option value="chirp-auk">v4.5 · Free（chirp-auk）</option>
+            </select>
           </ConfigField>
         </div>
-      </section>
+        <details className="music-cookie-help suno-cookie-help">
+          <summary>如何获取 Suno Cookie</summary>
+          <div>
+            <ol>
+              <li>在电脑浏览器打开 <a href="https://suno.com/" rel="noreferrer" target="_blank">Suno</a> 并登录账号。</li>
+              <li>按 F12 打开开发者工具，进入“网络 / Network”，然后刷新页面。</li>
+              <li>搜索并打开 <code>client?__clerk_api_version=2025-11-10&amp;_clerk_js_version=5.117.0</code> 请求。</li>
+              <li>优先复制“请求标头 / Request Headers”中的完整 Cookie；也可以把响应中的四段 <code>Set-Cookie</code> 全部复制到输入框。</li>
+            </ol>
+            <small>系统会自动合并四段 Cookie 并过滤 <code>Path</code>、<code>Secure</code> 等属性，最终内容必须包含 <code>__client</code>。Cookie 等同登录凭据，请勿发送给他人。</small>
+          </div>
+        </details>
+        <details className="music-cookie-help suno-cookie-help">
+          <summary>如何获取 2Captcha API Key</summary>
+          <div>
+            <ol>
+              <li>打开 <a href="https://2captcha.com/enterpage" rel="noreferrer" target="_blank">2Captcha</a>，注册 Customer 账号。</li>
+              <li>充值少量余额；验证码识别由第三方人工服务计费，与 Suno Credits 分开。</li>
+              <li>在 2Captcha 控制台复制 API Key，粘贴到上方输入框并保存。</li>
+              <li>点击“检测 Cookie 与配额”，确认 Suno Cookie 正常后再生成歌曲。</li>
+            </ol>
+            <small>Suno Pro / Premier 订阅只提供歌曲生成额度，不能替代 hCaptcha token。请勿把 2Captcha Key 提交到代码仓库。</small>
+          </div>
+        </details>
+      </section> : null}
 
+      {false ? (
       <section className="panel admin-panel admin-panel--wide">
         <div className="admin-panel-title">
           <h2>
@@ -10665,6 +12860,7 @@ function AdminConfigPage({
           </div>
         </div>
       </section>
+      ) : null}
 
       <section className="panel admin-panel admin-panel--notes">
         <div className="admin-panel-title">

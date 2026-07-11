@@ -8,23 +8,28 @@ import cors from "cors";
 import Database from "better-sqlite3";
 import dotenv from "dotenv";
 import express from "express";
-import { execFile } from "node:child_process";
 import fs from "node:fs";
+import dns from "node:dns/promises";
+import net from "node:net";
 import path from "node:path";
+import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, "..");
 dotenv.config({ path: path.join(projectRoot, ".env") });
 const requireCjs = createRequire(import.meta.url);
+const execFileAsync = promisify(execFile);
 const storageDir = process.env.AIRADIO_STORAGE_DIR
   ? path.resolve(process.env.AIRADIO_STORAGE_DIR)
   : path.join(__dirname, "storage");
 const audioDir = path.join(storageDir, "audio");
 const soundEffectsDir = path.join(storageDir, "sound-effects");
+const apiTmpDir = path.join(storageDir, "tmp");
 const dbPath = path.join(storageDir, "airadio.sqlite");
 const clientDistDir = path.join(projectRoot, "dist");
 const port = Number(process.env.AIRADIO_API_PORT ?? 4177);
@@ -35,6 +40,8 @@ const adminSessions = new Map();
 
 fs.mkdirSync(audioDir, { recursive: true });
 fs.mkdirSync(soundEffectsDir, { recursive: true });
+fs.mkdirSync(apiTmpDir, { recursive: true });
+process.env.TMPDIR = apiTmpDir;
 
 const db = new Database(dbPath);
 db.pragma("journal_mode = WAL");
@@ -140,6 +147,24 @@ if (!programColumns.includes("publish_date")) {
 if (!programColumns.includes("published_at")) {
   db.exec("ALTER TABLE programs ADD COLUMN published_at TEXT");
 }
+if (!programColumns.includes("music_playlist_id")) {
+  db.exec("ALTER TABLE programs ADD COLUMN music_playlist_id TEXT");
+}
+if (!programColumns.includes("playback_mode")) {
+  db.exec("ALTER TABLE programs ADD COLUMN playback_mode TEXT");
+}
+if (!programColumns.includes("program_preset_id")) {
+  db.exec("ALTER TABLE programs ADD COLUMN program_preset_id TEXT");
+}
+if (!programColumns.includes("playback_reset_at")) {
+  db.exec("ALTER TABLE programs ADD COLUMN playback_reset_at TEXT");
+}
+if (!programColumns.includes("restart_from_beginning")) {
+  db.exec("ALTER TABLE programs ADD COLUMN restart_from_beginning INTEGER DEFAULT 0");
+}
+if (!programColumns.includes("filler_timeline_json")) {
+  db.exec("ALTER TABLE programs ADD COLUMN filler_timeline_json TEXT");
+}
 
 const archiveColumns = db.prepare("PRAGMA table_info(program_archives)").all().map((column) => column.name);
 if (!archiveColumns.includes("playlist_json")) {
@@ -166,6 +191,15 @@ db.exec(`
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS music_playlists (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    songs_json TEXT NOT NULL,
+    playback_mode TEXT NOT NULL DEFAULT 'sequential' CHECK (playback_mode IN ('sequential', 'shuffle')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
 `);
 
 const oldDefaultSystemPrompt = "你是星声电台的AI节目策划，负责生成温柔、适合电台播出的节目文案。";
@@ -177,14 +211,15 @@ const defaultAudioMix = {
   startMode: "voice-first",
   volume: 0.28,
 };
-const FLOW_FILLER_TARGET_SONGS = 300;
-const FLOW_FILLER_INITIAL_SONGS = 50;
-const FLOW_FILLER_TOP_UP_BATCH_SONGS = 50;
+const FLOW_FILLER_TARGET_SONGS = 150;
+const FLOW_FILLER_INITIAL_SONGS = 30;
+const FLOW_FILLER_TOP_UP_BATCH_SONGS = 30;
 const FLOW_FILLER_TOP_UP_THRESHOLD = 10;
 const KUGOU_MAX_PROGRAM_SONGS = 500;
 const KUGOU_PLAY_URL_CONCURRENCY = 8;
-const AI_HOT_SONG_TARGET = 300;
-const AI_HOT_SONG_BATCH_SIZE = 50;
+const AI_HOT_SONG_TARGET = 30;
+const AI_HOT_SONG_MAX = 300;
+const AI_HOT_SONG_BATCH_SIZE = 30;
 const DEFAULT_AI_HOT_SONG_PROMPT =
   "生成适合后台音乐连播的歌曲清单，覆盖华语流行、港台金曲、欧美流行、日韩流行、网络热歌和经典高传唱度作品；歌名和歌手要准确，避免重复、纯音乐和白噪音。";
 
@@ -195,6 +230,13 @@ const defaultHostVoices = {
   mobei: "苏打",
   xiaoya: "冰糖",
 };
+
+const defaultVoiceStylePresets = [
+  "自然、清晰、亲切，适合电台直播",
+  "沉稳、专业、节奏清晰的新闻播报",
+  "温柔、治愈、富有陪伴感的深夜电台",
+  "轻快、活力、有感染力的音乐节目",
+];
 
 const hostProfiles = [
   { id: "xingyao", name: "星遥", voice: "温柔治愈音", tone: "轻松、治愈、陪伴" },
@@ -227,19 +269,20 @@ const defaultConfig = {
     model: "tts-1-hd",
     provider: "OpenAI / 网关兼容",
     speed: 1,
+    defaultStylePrompt: defaultVoiceStylePresets[0],
+    stylePresets: defaultVoiceStylePresets,
     voiceId: "alloy",
     hostVoices: defaultHostVoices,
   },
   suno: {
-    apiKey: "",
-    baseUrl: "https://api.sunoapi.org/api/v1",
-    callbackUrl: "",
+    baseUrl: "http://127.0.0.1:3010",
+    captchaKey: "",
+    cookie: "",
     defaultPrompt: "星夜、湖面、柔和人声、治愈电子氛围",
     enabled: true,
-    generatePath: "/generate",
     instrumental: false,
-    maxQueue: 3,
-    model: "chirp-v4",
+    model: "auto",
+    negativeTags: "harsh noise, distorted vocals, low quality",
     style: "ambient pop, chill, cinematic",
   },
   plugins: {
@@ -268,17 +311,27 @@ const defaultConfig = {
       audioMix: defaultAudioMix,
     },
     kugouMusic: {
+      apiEnabled: true,
       cardId: 2,
       cookie: "",
       enabled: true,
       hostId: "xiaoya",
       maxSongs: 5,
       name: "音乐联播节目",
+      provider: "auto",
       quality: "128",
       rankType: 21608,
       searchKeywords: "新歌",
       source: "new",
       useAiScript: true,
+    },
+    neteaseMusic: {
+      cookie: "",
+      enabled: true,
+    },
+    qqMusic: {
+      cookie: "",
+      enabled: true,
     },
   },
   storage: {
@@ -431,6 +484,16 @@ function backfillProgramCategories() {
 
 backfillProgramCategories();
 
+// 后台媒体任务依赖当前 Node 进程中的 yt-dlp/FFmpeg 子进程；服务重启后不能继续。
+// 明确标记为失败，避免节目永久停留在“生成中”且无法重试或删除。
+db.prepare(`
+  UPDATE programs
+  SET status = 'failed',
+      error_message = '服务在后台生成期间重启，请重新提交后台生成任务',
+      updated_at = ?
+  WHERE plugin_id = 'remote-media' AND status = 'generating'
+`).run(nowIso());
+
 function clampNumber(value, min, max, fallback) {
   const number = Number(value);
   if (!Number.isFinite(number)) {
@@ -459,6 +522,21 @@ function normalizeAudioMix(input = {}) {
 function mergeConfig(input = {}) {
   const llm = { ...defaultConfig.llm, ...(input.llm ?? {}) };
   const tts = { ...defaultConfig.tts, ...(input.tts ?? {}) };
+  const sunoInput = input.suno ?? {};
+  const suno = {
+    ...defaultConfig.suno,
+    baseUrl: /sunoapi\.org/iu.test(String(sunoInput.baseUrl ?? ""))
+      ? defaultConfig.suno.baseUrl
+      : String(sunoInput.baseUrl ?? defaultConfig.suno.baseUrl).trim() || defaultConfig.suno.baseUrl,
+    captchaKey: String(sunoInput.captchaKey ?? "").trim(),
+    cookie: normalizeSunoCookie(sunoInput.cookie),
+    defaultPrompt: String(sunoInput.defaultPrompt ?? defaultConfig.suno.defaultPrompt),
+    enabled: sunoInput.enabled !== false,
+    instrumental: Boolean(sunoInput.instrumental),
+    model: normalizeSunoModel(sunoInput.model),
+    negativeTags: String(sunoInput.negativeTags ?? defaultConfig.suno.negativeTags),
+    style: String(sunoInput.style ?? defaultConfig.suno.style),
+  };
 
   if (!llm.systemPrompt || llm.systemPrompt === oldDefaultSystemPrompt) {
     llm.systemPrompt = defaultSystemPrompt;
@@ -468,11 +546,28 @@ function mergeConfig(input = {}) {
     ...defaultHostVoices,
     ...(tts.hostVoices ?? {}),
   };
+  if (String(tts.engine ?? "").trim().toLowerCase() === "local") {
+    tts.engine = defaultConfig.tts.engine;
+    tts.provider = defaultConfig.tts.provider;
+    tts.baseUrl = tts.baseUrl || defaultConfig.tts.baseUrl;
+    tts.model = tts.model && tts.model !== "linux-system-speech" ? tts.model : defaultConfig.tts.model;
+    tts.voiceId = tts.voiceId || defaultConfig.tts.voiceId;
+    tts.format = tts.format || defaultConfig.tts.format;
+  }
+  tts.defaultStylePrompt = String(tts.defaultStylePrompt ?? defaultConfig.tts.defaultStylePrompt).trim() || defaultConfig.tts.defaultStylePrompt;
+  tts.stylePresets = Array.from(new Set(
+    (Array.isArray(tts.stylePresets) ? tts.stylePresets : defaultVoiceStylePresets)
+      .map((item) => String(item ?? "").trim())
+      .filter(Boolean),
+  ));
+  if (!tts.stylePresets.length) {
+    tts.stylePresets = [...defaultVoiceStylePresets];
+  }
 
   return {
     llm,
     tts,
-    suno: { ...defaultConfig.suno, ...(input.suno ?? {}) },
+    suno,
     plugins: {
       dailyBriefing: {
         ...defaultConfig.plugins.dailyBriefing,
@@ -495,6 +590,17 @@ function mergeConfig(input = {}) {
       kugouMusic: {
         ...defaultConfig.plugins.kugouMusic,
         ...(input.plugins?.kugouMusic ?? {}),
+        provider: ["auto", "kugou", "netease", "qq"].includes(String(input.plugins?.kugouMusic?.provider ?? ""))
+          ? String(input.plugins.kugouMusic.provider)
+          : defaultConfig.plugins.kugouMusic.provider,
+      },
+      neteaseMusic: {
+        ...defaultConfig.plugins.neteaseMusic,
+        ...(input.plugins?.neteaseMusic ?? {}),
+      },
+      qqMusic: {
+        ...defaultConfig.plugins.qqMusic,
+        ...(input.plugins?.qqMusic ?? {}),
       },
     },
     storage: {
@@ -616,8 +722,645 @@ function validateServiceConfig(config) {
   return missing;
 }
 
+const sunoCookieAttributeNames = new Set([
+  "domain", "expires", "httponly", "max-age", "partitioned", "path",
+  "priority", "samesite", "secure",
+]);
+
+function normalizeSunoCookie(input) {
+  const normalized = String(input ?? "").replace(/\b(?:set-cookie|cookie)\s*:\s*/giu, " ");
+  const cookies = new Map();
+  const pattern = /([!#$%&'*+\-.^_`|~0-9A-Za-z]+)=([^;\r\n,]*)/gu;
+  for (const match of normalized.matchAll(pattern)) {
+    const name = match[1].trim();
+    if (!name || sunoCookieAttributeNames.has(name.toLowerCase())) {
+      continue;
+    }
+    cookies.set(name, match[2].trim());
+  }
+  return [...cookies.entries()].map(([name, value]) => `${name}=${value}`).join("; ");
+}
+
+function normalizeSunoModel(input) {
+  const value = String(input ?? "").trim().toLowerCase();
+  if (!value || ["auto", "chirp-v3-5"].includes(value)) {
+    return "auto";
+  }
+  if (["v5.5", "v5_5", "chirp-v5-5", "chirp-fenix"].includes(value)) {
+    return "chirp-fenix";
+  }
+  if (["v4.5", "v4_5", "chirp-v4-5", "chirp-auk"].includes(value)) {
+    return "chirp-auk";
+  }
+  return String(input).trim();
+}
+
+function sunoModelForQuota(quota) {
+  const monthlyLimit = Number(quota?.monthly_limit ?? 0);
+  return monthlyLimit > 50 ? "chirp-fenix" : "chirp-auk";
+}
+
+async function resolveSunoModel(config) {
+  const configured = normalizeSunoModel(config?.model);
+  if (configured !== "auto") {
+    return configured;
+  }
+  const quota = await callSunoApi(config, "/api/get_limit");
+  return sunoModelForQuota(quota);
+}
+
+function validateSunoConfig(config) {
+  const missing = [];
+  if (!String(config?.baseUrl ?? "").trim()) {
+    missing.push("本地服务地址");
+  }
+  if (!String(config?.cookie ?? "").trim()) {
+    missing.push("Suno Cookie");
+  }
+  if (!String(config?.model ?? "").trim()) {
+    missing.push("模型版本");
+  }
+  if (!String(config?.captchaKey ?? "").trim()) {
+    missing.push("2Captcha API Key（Suno hCaptcha 必需）");
+  }
+  return missing;
+}
+
+async function callSunoApi(config, pathName, options = {}) {
+  const baseUrl = normalizeBaseUrl(config?.baseUrl);
+  if (!baseUrl) {
+    throw new Error("Suno 本地服务地址未配置");
+  }
+  const cookie = normalizeSunoCookie(config?.cookie);
+  if (!cookie) {
+    throw new Error("Suno Cookie 未配置");
+  }
+  if (!/(?:^|;\s*)__client=/u.test(cookie)) {
+    throw new Error("Suno Cookie 缺少 __client；请粘贴 client?... 请求的 Cookie 或完整 Set-Cookie 内容");
+  }
+  const response = await fetch(`${baseUrl}${pathName.startsWith("/") ? pathName : `/${pathName}`}`, {
+    ...options,
+    headers: {
+      Accept: "application/json",
+      Cookie: cookie,
+      ...(String(config?.captchaKey ?? "").trim() ? { "X-2Captcha-Key": String(config.captchaKey).trim() } : {}),
+      ...(options.body ? { "Content-Type": "application/json" } : {}),
+      ...(options.headers ?? {}),
+    },
+  });
+  const text = await response.text();
+  let payload;
+  try {
+    payload = text ? JSON.parse(text) : null;
+  } catch {
+    payload = text;
+  }
+  if (!response.ok) {
+    const reason = payload?.error ?? payload?.message ?? text ?? `HTTP ${response.status}`;
+    throw new Error(`Suno API 请求失败：${reason}`);
+  }
+  return payload;
+}
+
+function parseAiMusicPlan(content, fallback = {}) {
+  const raw = String(content ?? "").trim();
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/iu)?.[1] ?? raw;
+  const candidates = [
+    fenced,
+    fenced.slice(Math.max(0, fenced.indexOf("{")), fenced.lastIndexOf("}") + 1),
+  ];
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (parsed && typeof parsed === "object") {
+        return {
+          title: String(parsed.title ?? fallback.title ?? "AI原创音乐").trim() || "AI原创音乐",
+          style: String(parsed.style ?? parsed.tags ?? fallback.style ?? "").trim(),
+          lyrics: String(parsed.lyrics ?? parsed.prompt ?? fallback.lyrics ?? "").trim(),
+          negativeTags: String(parsed.negativeTags ?? parsed.negative_tags ?? fallback.negativeTags ?? "").trim(),
+          voiceGender: ["male", "female"].includes(String(parsed.voiceGender ?? fallback.voiceGender ?? "").toLowerCase())
+            ? String(parsed.voiceGender ?? fallback.voiceGender).toLowerCase()
+            : "random",
+        };
+      }
+    } catch {
+      // Try the next JSON extraction strategy.
+    }
+  }
+  throw new Error("大模型没有返回可解析的歌曲方案");
+}
+
+async function generateAiMusicPlan(config, input = {}) {
+  const missing = validateServiceConfig(config.llm);
+  if (missing.length) {
+    throw new Error(`大模型配置缺少：${missing.join("、")}`);
+  }
+  if (!config.llm.enabled) {
+    throw new Error("大模型 API 当前未启用");
+  }
+  const brief = String(input.brief ?? config.suno.defaultPrompt ?? "").trim();
+  const instrumental = Boolean(input.instrumental);
+  const requestedGender = ["male", "female"].includes(String(input.voiceGender ?? "").toLowerCase())
+    ? String(input.voiceGender).toLowerCase()
+    : (Math.random() < 0.5 ? "female" : "male");
+  const variationNonce = String(input.variationNonce ?? `${Date.now()}-${randomUUID()}`);
+  const endpoint = buildEndpoint(config.llm.baseUrl, "/chat/completions");
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: jsonHeaders(config.llm),
+    body: JSON.stringify({
+      model: config.llm.model,
+      messages: [
+        {
+          role: "system",
+          content:
+            "你是中文原创音乐制作人，负责为 Suno Custom Mode 设计歌曲。" +
+            "只输出严格 JSON，不要 Markdown。格式：" +
+            "{\"title\":\"歌名\",\"style\":\"英文或中英混合音乐风格标签\",\"lyrics\":\"带 [Verse] [Chorus] 等结构标记的完整原创歌词\",\"negativeTags\":\"不希望出现的风格\"}。" +
+            "歌词必须原创、自然、适合演唱，不得模仿或引用现有歌曲。每次必须随机选择不同题材、叙事视角、曲风、速度和配器，不能复用固定模板。",
+        },
+        {
+          role: "user",
+          content:
+            `随机创作编号：${variationNonce}\n` +
+            `创作需求：${brief || "不限定主题，请自由随机创作一首适合电台播放的原创歌曲"}\n` +
+            `暂定标题：${String(input.title ?? "").trim() || "请自动命名"}\n` +
+            `默认风格参考：${String(input.style ?? config.suno.style ?? "").trim()}\n` +
+            `纯音乐：${instrumental ? "是；lyrics 返回简短的器乐段落结构说明，不写演唱歌词" : "否；需要完整中文歌词"}\n` +
+            `主唱性别：${requestedGender === "female" ? "女声" : "男声"}\n` +
+            `排除风格：${String(input.negativeTags ?? config.suno.negativeTags ?? "").trim()}`,
+        },
+      ],
+      temperature: Math.max(0.6, Number(config.llm.temperature ?? 0.8)),
+      max_tokens: Math.max(1800, Number(config.llm.maxTokens ?? 2400)),
+      stream: false,
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(`AI 音乐方案生成失败：${await readError(response)}`);
+  }
+  const data = await response.json();
+  return parseAiMusicPlan(chatCompletionText(data), {
+    title: input.title,
+    style: input.style ?? config.suno.style,
+    negativeTags: input.negativeTags ?? config.suno.negativeTags,
+    voiceGender: requestedGender,
+  });
+}
+
+async function waitForSunoAudio(config, clips, timeoutMs = 150_000) {
+  const ids = (Array.isArray(clips) ? clips : [])
+    .map((clip) => String(clip?.id ?? "").trim())
+    .filter(Boolean);
+  if (!ids.length) {
+    throw new Error("Suno 没有返回生成任务 ID");
+  }
+  const startedAt = Date.now();
+  let latest = clips;
+  while (Date.now() - startedAt < timeoutMs) {
+    const ready = (Array.isArray(latest) ? latest : []).filter(
+      (clip) => ["streaming", "complete"].includes(String(clip?.status ?? "")) && clip?.audio_url,
+    );
+    const errors = (Array.isArray(latest) ? latest : []).filter((clip) => clip?.status === "error");
+    if (ready.length + errors.length >= ids.length) {
+      if (!ready.length) {
+        throw new Error(errors[0]?.error_message || "Suno 音乐生成失败");
+      }
+      return { clips: latest, ready };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+    latest = await callSunoApi(config, `/api/get?ids=${encodeURIComponent(ids.join(","))}`);
+  }
+  const ready = (Array.isArray(latest) ? latest : []).filter(
+    (clip) => ["streaming", "complete"].includes(String(clip?.status ?? "")) && clip?.audio_url,
+  );
+  if (ready.length) {
+    return { clips: latest, ready };
+  }
+  throw new Error("Suno 音乐仍在生成，等待超时，请稍后重试");
+}
+
+function normalizeVoiceGender(value) {
+  const gender = String(value ?? "random").toLowerCase();
+  return ["male", "female"].includes(gender) ? gender : "random";
+}
+
+function styleWithVoiceGender(style, gender) {
+  const cleaned = String(style ?? "").trim();
+  const vocalStyle = gender === "female" ? "female lead vocals" : "male lead vocals";
+  return new RegExp(`\\b${gender}\\b`, "iu").test(cleaned) ? cleaned : [cleaned, vocalStyle].filter(Boolean).join(", ");
+}
+
+async function storeSunoAudio(clip, programId) {
+  const remoteUrl = String(clip?.audio_url ?? "").trim();
+  if (!remoteUrl) {
+    throw new Error("Suno 任务没有返回音频地址");
+  }
+  const response = await fetch(remoteUrl);
+  if (!response.ok) {
+    throw new Error(`Suno 音频下载失败：HTTP ${response.status}`);
+  }
+  const mimeType = response.headers.get("content-type") || "audio/mpeg";
+  const extension = audioExtensionFromMime(mimeType, new URL(remoteUrl).pathname) || "mp3";
+  const fileName = `${programId}-suno.${extension}`;
+  const audioPath = path.join(audioDir, fileName);
+  fs.writeFileSync(audioPath, Buffer.from(await response.arrayBuffer()));
+  return { audioPath, audioUrl: `/storage/audio/${fileName}` };
+}
+
 function normalizeBaseUrl(baseUrl) {
   return String(baseUrl ?? "").trim().replace(/\/+$/, "");
+}
+
+function isPrivateMediaAddress(address) {
+  const normalized = String(address ?? "").toLowerCase().split("%")[0];
+  if (net.isIPv4(normalized)) {
+    const parts = normalized.split(".").map(Number);
+    return (
+      parts[0] === 0 || parts[0] === 10 || parts[0] === 127 ||
+      (parts[0] === 100 && parts[1] >= 64 && parts[1] <= 127) ||
+      (parts[0] === 169 && parts[1] === 254) ||
+      (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) ||
+      (parts[0] === 192 && parts[1] === 168) ||
+      parts[0] >= 224
+    );
+  }
+  if (net.isIPv6(normalized)) {
+    return (
+      normalized === "::" || normalized === "::1" ||
+      normalized.startsWith("fc") || normalized.startsWith("fd") ||
+      normalized.startsWith("fe8") || normalized.startsWith("fe9") ||
+      normalized.startsWith("fea") || normalized.startsWith("feb") ||
+      normalized.startsWith("::ffff:127.") || normalized.startsWith("::ffff:10.") ||
+      normalized.startsWith("::ffff:192.168.")
+    );
+  }
+  return true;
+}
+
+async function validateRemoteMediaUrl(input) {
+  let url;
+  try {
+    url = new URL(String(input ?? "").trim());
+  } catch {
+    throw new Error("请输入完整的 http:// 或 https:// 多媒体播放地址");
+  }
+  if (!["http:", "https:"].includes(url.protocol)) {
+    throw new Error("媒体地址仅支持 HTTP 或 HTTPS 协议");
+  }
+  if (url.username || url.password) {
+    throw new Error("媒体地址不能包含用户名或密码");
+  }
+  const addresses = net.isIP(url.hostname)
+    ? [{ address: url.hostname }]
+    : await dns.lookup(url.hostname, { all: true, verbatim: true });
+  if (!addresses.length || addresses.some((item) => isPrivateMediaAddress(item.address))) {
+    throw new Error("为保护服务器安全，媒体地址不能指向本机、局域网或保留网络");
+  }
+  return url.toString();
+}
+
+async function resolveRemoteMediaUrl(input) {
+  let current = await validateRemoteMediaUrl(input);
+  for (let redirects = 0; redirects < 5; redirects += 1) {
+    let response;
+    try {
+      response = await fetch(current, {
+        method: "HEAD",
+        redirect: "manual",
+        signal: AbortSignal.timeout(12_000),
+        headers: { "User-Agent": "Airadio-Media-Probe/1.0" },
+      });
+    } catch {
+      return current;
+    }
+    if (![301, 302, 303, 307, 308].includes(response.status)) {
+      return current;
+    }
+    const location = response.headers.get("location");
+    if (!location) {
+      return current;
+    }
+    current = await validateRemoteMediaUrl(new URL(location, current).toString());
+  }
+  throw new Error("媒体地址重定向次数过多");
+}
+
+function mediaProbeTitle(probe, mediaUrl) {
+  const tagged = String(probe?.format?.tags?.title ?? "").trim();
+  if (tagged) {
+    return tagged.slice(0, 120);
+  }
+  try {
+    const filename = decodeURIComponent(new URL(mediaUrl).pathname.split("/").filter(Boolean).pop() ?? "")
+      .replace(/\.(?:aac|flac|m3u8|m4a|mp3|mp4|ogg|opus|wav|webm)$/iu, "")
+      .trim();
+    return filename.slice(0, 120);
+  } catch {
+    return "网络媒体节目";
+  }
+}
+
+function safeMediaRequestHeaders(headers = {}) {
+  const allowed = new Set(["accept", "accept-language", "cookie", "origin", "referer", "user-agent"]);
+  return Object.fromEntries(Object.entries(headers)
+    .map(([name, value]) => [String(name).toLowerCase(), String(value ?? "").replace(/[\r\n]/gu, "").trim()])
+    .filter(([name, value]) => allowed.has(name) && value));
+}
+
+function ffmpegHeaderArguments(headers = {}) {
+  const entries = Object.entries(safeMediaRequestHeaders(headers));
+  return entries.length
+    ? ["-headers", `${entries.map(([name, value]) => `${name}: ${value}`).join("\r\n")}\r\n`]
+    : [];
+}
+
+function publicMediaProbe(probe) {
+  const { requestHeaders, siteCookie, ...safe } = probe ?? {};
+  return safe.resolver && safe.resolver !== "direct"
+    ? { ...safe, mediaUrl: safe.originalUrl }
+    : safe;
+}
+
+function mediaSiteCookieFile(pageUrl, rawCookie) {
+  const cookie = cookieToHeader(mergeCookieValues(rawCookie));
+  if (!cookie) {
+    return null;
+  }
+  const url = new URL(pageUrl);
+  const hostname = url.hostname.toLowerCase();
+  const domain = hostname.startsWith("www.") ? `.${hostname.slice(4)}` : hostname;
+  const expires = Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60;
+  const rows = ["# Netscape HTTP Cookie File"];
+  for (const [name, value] of Object.entries(mergeCookieValues(cookie))) {
+    rows.push([domain, domain.startsWith(".") ? "TRUE" : "FALSE", "/", url.protocol === "https:" ? "TRUE" : "FALSE", expires, name, value].join("\t"));
+  }
+  const filePath = path.join(apiTmpDir, `media-cookie-${randomUUID()}.txt`);
+  fs.writeFileSync(filePath, `${rows.join("\n")}\n`, { mode: 0o600 });
+  return filePath;
+}
+
+async function probeMediaStream(mediaUrl, requestHeaders = {}) {
+  const { stdout } = await execFileAsync("ffprobe", [
+    "-v", "error",
+    "-rw_timeout", "30000000",
+    ...ffmpegHeaderArguments(requestHeaders),
+    "-show_entries", "format=duration,format_name:format_tags=title:stream=codec_type,codec_name",
+    "-of", "json",
+    mediaUrl,
+  ], { maxBuffer: 2 * 1024 * 1024, timeout: 45_000 });
+  const probe = JSON.parse(stdout || "{}");
+  const audioStream = (Array.isArray(probe.streams) ? probe.streams : []).find((stream) => stream?.codec_type === "audio");
+  if (!audioStream) {
+    throw new Error("该地址没有检测到音轨");
+  }
+  const duration = Number(probe?.format?.duration ?? 0);
+  return {
+    codec: String(audioStream.codec_name ?? "unknown"),
+    duration: Number.isFinite(duration) && duration > 0 ? Math.round(duration * 10) / 10 : 0,
+    format: String(probe?.format?.format_name ?? "unknown"),
+    title: mediaProbeTitle(probe, mediaUrl),
+  };
+}
+
+function bilibiliVideoId(input) {
+  return String(input ?? "").match(/(?:bilibili\.com\/video\/)(BV[0-9A-Za-z]+)/iu)?.[1] ?? "";
+}
+
+async function resolveBilibiliPage(pageUrl, siteCookie = "") {
+  const bvid = bilibiliVideoId(pageUrl);
+  if (!bvid) {
+    return null;
+  }
+  const referer = `https://www.bilibili.com/video/${bvid}/`;
+  const requestHeaders = safeMediaRequestHeaders({
+    Referer: referer,
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
+  });
+  const apiHeaders = safeMediaRequestHeaders({
+    Cookie: cookieToHeader(mergeCookieValues(siteCookie)),
+    ...requestHeaders,
+  });
+  const viewResponse = await fetch(`https://api.bilibili.com/x/web-interface/view?bvid=${encodeURIComponent(bvid)}`, {
+    headers: apiHeaders,
+    signal: AbortSignal.timeout(20_000),
+  });
+  const view = await viewResponse.json();
+  if (!viewResponse.ok || Number(view?.code) !== 0 || !view?.data?.cid) {
+    throw new Error(`Bilibili 页面信息解析失败：${view?.message || `HTTP ${viewResponse.status}`}`);
+  }
+  const cid = view.data.cid;
+  const playResponse = await fetch(
+    `https://api.bilibili.com/x/player/playurl?bvid=${encodeURIComponent(bvid)}&cid=${encodeURIComponent(cid)}&fnval=16&qn=80&fourk=1`,
+    { headers: apiHeaders, signal: AbortSignal.timeout(20_000) },
+  );
+  const play = await playResponse.json();
+  const audios = Array.isArray(play?.data?.dash?.audio)
+    ? [...play.data.dash.audio].sort((a, b) => Number(b?.bandwidth ?? 0) - Number(a?.bandwidth ?? 0))
+    : [];
+  const selected = audios[0] ?? play?.data?.durl?.[0];
+  const mediaUrl = String(selected?.baseUrl ?? selected?.base_url ?? selected?.url ?? "").trim();
+  if (!playResponse.ok || Number(play?.code) !== 0 || !mediaUrl) {
+    throw new Error(`Bilibili 没有返回可用音轨：${play?.message || "可能需要登录 Cookie 或该内容受限"}`);
+  }
+  await validateRemoteMediaUrl(mediaUrl);
+  return {
+    codec: String(selected?.codecs ?? "aac").split(".")[0],
+    creator: String(view.data.owner?.name ?? "").trim(),
+    duration: Math.max(0, Number(view.data.duration ?? play?.data?.dash?.duration ?? 0)),
+    format: "bilibili-dash",
+    mediaUrl,
+    originalUrl: referer,
+    requestHeaders,
+    resolver: "bilibili-api",
+    siteCookie,
+    title: String(view.data.title ?? bvid).trim(),
+  };
+}
+
+async function resolveMediaPageWithYtDlp(pageUrl, siteCookie = "") {
+  const cookieFile = mediaSiteCookieFile(pageUrl, siteCookie);
+  try {
+    const args = [
+      "--no-config", "--no-playlist", "--no-warnings", "--skip-download",
+      "--dump-single-json", "--socket-timeout", "30", "--impersonate", "chrome",
+      "--format", "bestaudio/best",
+      ...(cookieFile ? ["--cookies", cookieFile] : []),
+      pageUrl,
+    ];
+    const { stdout } = await execFileAsync("yt-dlp", args, { maxBuffer: 16 * 1024 * 1024, timeout: 90_000 });
+    const data = JSON.parse(String(stdout ?? "").trim());
+    const selected = Array.isArray(data.requested_formats)
+      ? data.requested_formats.find((format) => format?.acodec && format.acodec !== "none")
+      : data;
+    const mediaUrl = String(selected?.url ?? data.url ?? "").trim();
+    if (!mediaUrl) {
+      throw new Error("yt-dlp 没有返回可用音频流");
+    }
+    await validateRemoteMediaUrl(mediaUrl);
+    return {
+      codec: String(selected?.acodec ?? data.acodec ?? "unknown").split(".")[0],
+      creator: String(data.uploader ?? data.channel ?? data.creator ?? "").trim(),
+      duration: Math.max(0, Number(data.duration ?? 0)),
+      format: String(selected?.ext ?? data.ext ?? data.protocol ?? "web-media"),
+      mediaUrl,
+      originalUrl: String(data.webpage_url ?? pageUrl),
+      requestHeaders: safeMediaRequestHeaders({ ...(data.http_headers ?? {}), ...(selected?.http_headers ?? {}) }),
+      resolver: `yt-dlp:${String(data.extractor_key ?? data.extractor ?? "generic")}`,
+      siteCookie,
+      title: String(data.title ?? "网络媒体节目").trim(),
+    };
+  } finally {
+    if (cookieFile && fs.existsSync(cookieFile)) {
+      fs.rmSync(cookieFile, { force: true });
+    }
+  }
+}
+
+async function probeRemoteMedia(input, options = {}) {
+  const originalUrl = await resolveRemoteMediaUrl(input);
+  try {
+    const direct = await probeMediaStream(originalUrl);
+    return { ...direct, creator: "", mediaUrl: originalUrl, originalUrl, requestHeaders: {}, resolver: "direct", siteCookie: "" };
+  } catch (directError) {
+    try {
+      const resolved = await resolveBilibiliPage(originalUrl, options.siteCookie)
+        ?? await resolveMediaPageWithYtDlp(originalUrl, options.siteCookie);
+      if (String(resolved.resolver).startsWith("yt-dlp:")) {
+        return resolved;
+      }
+      const detected = await probeMediaStream(resolved.mediaUrl, resolved.requestHeaders);
+      return {
+        ...resolved,
+        codec: detected.codec || resolved.codec,
+        duration: resolved.duration || detected.duration,
+        format: resolved.format || detected.format,
+        title: resolved.title || detected.title,
+      };
+    } catch (resolverError) {
+      if (resolverError?.code === "ENOENT") {
+        throw new Error("服务器尚未安装 yt-dlp 或 FFmpeg，无法解析媒体页面");
+      }
+      const directDetail = String(directError?.stderr ?? directError?.message ?? directError).trim().split("\n").slice(-1)[0];
+      const resolverDetail = String(resolverError?.stderr ?? resolverError?.message ?? resolverError).trim().split("\n").slice(-2).join(" ");
+      throw new Error(`页面解析失败：${resolverDetail || directDetail || "没有找到可播放音轨"}`);
+    }
+  }
+}
+
+async function storeRemoteMediaAudio(probe, programId, durationLimitSeconds) {
+  const outputPath = path.join(audioDir, `${programId}-remote-media.mp3`);
+  const limit = Math.round(clampNumber(durationLimitSeconds, 30, 21_600, 21_600));
+  const pageResolver = String(probe?.resolver ?? "").startsWith("yt-dlp:");
+  const shouldClip = !Number(probe?.duration) || limit < Math.max(1, Number(probe.duration) - 1);
+  let cookieFile = null;
+  try {
+    if (pageResolver) {
+      cookieFile = mediaSiteCookieFile(probe.originalUrl, probe.siteCookie);
+      const outputTemplate = outputPath.replace(/\.mp3$/u, ".%(ext)s");
+      const commonArgs = [
+        "--no-config", "--no-playlist", "--no-warnings", "--impersonate", "chrome", "--force-ipv4",
+        "--socket-timeout", "30", "--retries", "10", "--fragment-retries", "10",
+        "--retry-sleep", "http:linear=2::10", "--retry-sleep", "fragment:linear=1::5",
+        "--concurrent-fragments", "4",
+        "--extract-audio", "--audio-format", "mp3", "--audio-quality", "192K",
+        ...(shouldClip ? ["--download-sections", `*0-${limit}`] : []),
+        "--output", outputTemplate,
+        ...(cookieFile ? ["--cookies", cookieFile] : []),
+      ];
+      try {
+        await execFileAsync("yt-dlp", [
+          ...commonArgs,
+          "--format", "bestaudio/best",
+          probe.originalUrl,
+        ], { maxBuffer: 8 * 1024 * 1024, timeout: 60 * 60_000 });
+      } catch (firstError) {
+        for (const name of fs.readdirSync(audioDir).filter((name) => name.startsWith(`${programId}-remote-media.`))) {
+          fs.rmSync(path.join(audioDir, name), { force: true });
+        }
+        if (!/youtube/iu.test(String(probe.resolver))) {
+          throw firstError;
+        }
+        await execFileAsync("yt-dlp", [
+          ...commonArgs,
+          "--extractor-args", "youtube:player_client=web_safari,web_embedded",
+          "--format", "bestaudio[protocol*=m3u8]/bestaudio/best",
+          probe.originalUrl,
+        ], { maxBuffer: 8 * 1024 * 1024, timeout: 60 * 60_000 });
+      }
+    } else {
+      await execFileAsync("ffmpeg", [
+        "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+        "-rw_timeout", "30000000",
+        ...ffmpegHeaderArguments(probe.requestHeaders),
+        "-protocol_whitelist", "http,https,tcp,tls,crypto",
+        "-i", probe.mediaUrl,
+        "-map", "0:a:0", "-vn", "-t", String(limit),
+        "-c:a", "libmp3lame", "-b:a", "192k",
+        outputPath,
+      ], { maxBuffer: 4 * 1024 * 1024, timeout: 15 * 60_000 });
+    }
+    const stats = fs.statSync(outputPath);
+    if (!stats.size) {
+      throw new Error("提取后的音频文件为空");
+    }
+    return { audioPath: outputPath, audioUrl: `/storage/audio/${path.basename(outputPath)}` };
+  } catch (error) {
+    if (fs.existsSync(outputPath)) {
+      fs.rmSync(outputPath, { force: true });
+    }
+    const detail = String(error?.stderr ?? error?.message ?? error).trim().split("\n").slice(-2).join(" ");
+    throw new Error(`媒体音轨下载或转换失败${detail ? `：${detail}` : ""}`);
+  } finally {
+    if (cookieFile && fs.existsSync(cookieFile)) {
+      fs.rmSync(cookieFile, { force: true });
+    }
+  }
+}
+
+async function generateMediaIntroduction(config, input) {
+  const missing = validateServiceConfig(config);
+  if (missing.length) {
+    throw new Error(`大模型配置缺少：${missing.join("、")}`);
+  }
+  if (!config.enabled) {
+    throw new Error("大模型 API 当前未启用");
+  }
+  const endpoint = buildEndpoint(config.baseUrl, "/chat/completions");
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: jsonHeaders(config),
+    body: JSON.stringify({
+      model: config.model,
+      messages: [
+        {
+          role: "system",
+          content:
+            "你是中文电台节目主持人。请为即将播放的网络媒体内容写一段原创介绍词，只输出可直接配音的正文，不要 Markdown、标题或说话人前缀。" +
+            "长度 80 到 180 个汉字，说明内容名称和来源，语言自然，不能虚构未提供的事实，不要引用受版权保护的原文。",
+        },
+        {
+          role: "user",
+          content:
+            `节目名称：${input.title}\n` +
+            `内容作者或来源：${input.creator || "未填写"}\n` +
+            `补充要求：${input.prompt || "简洁介绍并自然引出接下来的内容"}`,
+        },
+      ],
+      temperature: Math.max(0.35, Number(config.temperature ?? 0.7)),
+      max_tokens: Math.max(500, Number(config.maxTokens ?? 800)),
+      stream: false,
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(`媒体介绍词生成失败：${await readError(response)}`);
+  }
+  const data = await response.json();
+  const text = chatCompletionText(data).replace(/^```(?:text)?|```$/giu, "").trim();
+  if (!text) {
+    throw new Error("大模型没有返回可用的媒体介绍词");
+  }
+  return text;
 }
 
 function buildEndpoint(baseUrl, endpoint) {
@@ -695,9 +1438,6 @@ function isMimoTts(config) {
 
 function ttsEngine(config) {
   const marker = `${config.engine} ${config.provider} ${config.model} ${config.baseUrl}`.toLowerCase();
-  if (marker.includes("local") || marker.includes("system speech") || marker.includes("本机语音")) {
-    return "local";
-  }
   if (marker.includes("mimo") || marker.includes("小米")) {
     return "mimo";
   }
@@ -727,13 +1467,13 @@ function ttsApiKeyOptional(config) {
 
 function validateTtsConfig(config) {
   const missing = [];
-  if (!String(config?.baseUrl ?? "").trim() && ttsEngine(config) !== "local") {
+  if (!String(config?.baseUrl ?? "").trim()) {
     missing.push("Endpoint");
   }
-  if (!String(config?.apiKey ?? "").trim() && !ttsApiKeyOptional(config) && ttsEngine(config) !== "local") {
+  if (!String(config?.apiKey ?? "").trim() && !ttsApiKeyOptional(config)) {
     missing.push("API Key");
   }
-  if (!String(config?.model ?? "").trim() && ttsEngine(config) !== "local") {
+  if (!String(config?.model ?? "").trim()) {
     missing.push("Model");
   }
   return missing;
@@ -819,196 +1559,6 @@ async function fetchOrThrow(endpoint, options, label) {
   } catch (error) {
     throw friendlyNetworkError(label, endpoint, error);
   }
-}
-
-function localSpeechRate(speed, segment) {
-  const text = `${segment?.style ?? ""} ${segment?.text ?? ""}`;
-  let rate = Math.round((Number(speed ?? 1) - 1) * 6);
-  // 新闻 / 早报类节目保持统一语速，不按内容微调。
-  const isNewsContext = /新闻|早报|热榜|快讯/u.test(text);
-  if (isNewsContext) {
-    return Math.max(-10, Math.min(10, rate));
-  }
-  if (/温柔|治愈|夜|沉稳|叙事|深夜/u.test(text)) {
-    rate -= 1;
-  }
-  if (/新闻|早报|热榜|重点|快讯|关注/u.test(text)) {
-    rate += 1;
-  }
-  return Math.max(-10, Math.min(10, rate));
-}
-
-function splitLocalSpeechText(text) {
-  const cleaned = sanitizeSpokenText(text);
-  if (!cleaned) {
-    return [];
-  }
-  const sentences = cleaned
-    .split(/(?<=[。！？!?；;])\s*/u)
-    .map((item) => item.trim())
-    .filter(Boolean);
-  const chunks = [];
-  for (const sentence of sentences.length ? sentences : [cleaned]) {
-    if (sentence.length <= 380) {
-      chunks.push(sentence);
-      continue;
-    }
-    for (let index = 0; index < sentence.length; index += 320) {
-      chunks.push(sentence.slice(index, index + 320));
-    }
-  }
-  return chunks;
-}
-
-function localSpeechSegments(script, segments = []) {
-  const safeSegments = Array.isArray(segments) && segments.length
-    ? segments
-        .map((segment) => ({ ...segment, text: sanitizeSpokenText(segment.text) }))
-        .filter((segment) => segment.text)
-    : splitLocalSpeechText(script).map((text, index) => ({
-        hostId: "",
-        hostName: index ? "本机语音" : "AI主播",
-        style: "清晰、自然、适合电台播报",
-        text,
-      }));
-
-  return safeSegments.length
-    ? safeSegments
-    : [{ hostId: "", hostName: "AI主播", style: "清晰、自然、适合电台播报", text: "欢迎收听星声电台。" }];
-}
-
-function execFilePromise(file, args, options = {}) {
-  return new Promise((resolve, reject) => {
-    execFile(file, args, options, (error, stdout, stderr) => {
-      if (error) {
-        reject(new Error((stderr || stdout || error.message || `${file} 执行失败`).trim()));
-        return;
-      }
-      resolve({ stdout, stderr });
-    });
-  });
-}
-
-function runWindowsSpeech({ outputPath, rate, text, voiceName }) {
-  if (process.platform !== "win32") {
-    return Promise.reject(new Error("当前系统不是 Windows，无法调用本机语音合成"));
-  }
-
-  const script = `
-$ErrorActionPreference = 'Stop'
-Add-Type -AssemblyName System.Speech
-$synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
-try {
-  $rate = 0
-  try { $rate = [int]$env:AIRADIO_TTS_RATE } catch { $rate = 0 }
-  $synth.Rate = [Math]::Max(-10, [Math]::Min(10, $rate))
-  $voice = $env:AIRADIO_TTS_VOICE
-  if ($voice) {
-    try { $synth.SelectVoice($voice) } catch {}
-  }
-  $synth.SetOutputToWaveFile($env:AIRADIO_TTS_OUT)
-  $synth.Speak($env:AIRADIO_TTS_TEXT)
-  $synth.SetOutputToNull()
-} finally {
-  $synth.Dispose()
-}
-`;
-
-  return new Promise((resolve, reject) => {
-    execFile(
-      "powershell.exe",
-      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
-      {
-        env: {
-          ...process.env,
-          AIRADIO_TTS_OUT: outputPath,
-          AIRADIO_TTS_RATE: String(rate),
-          AIRADIO_TTS_TEXT: text,
-          AIRADIO_TTS_VOICE: voiceName || process.env.AIRADIO_WINDOWS_TTS_VOICE || "",
-        },
-        maxBuffer: 1024 * 1024,
-        timeout: 120000,
-        windowsHide: true,
-      },
-      (error, stdout, stderr) => {
-        if (error) {
-          reject(new Error((stderr || stdout || error.message || "本机语音合成失败").trim()));
-          return;
-        }
-        resolve();
-      },
-    );
-  });
-}
-
-async function runLinuxSpeech({ outputPath, rate, text, voiceName }) {
-  if (process.platform === "win32") {
-    throw new Error("当前系统不是 Linux，无法调用 Linux 本机语音合成");
-  }
-
-  const command = process.env.AIRADIO_LINUX_TTS_CMD || "espeak-ng";
-  const wordsPerMinute = String(Math.round(Math.max(120, Math.min(230, 175 + rate * 5))));
-  const voice = voiceName || process.env.AIRADIO_LINUX_TTS_VOICE || "cmn";
-  const options = {
-    env: process.env,
-    maxBuffer: 1024 * 1024,
-    timeout: 120000,
-  };
-
-  try {
-    if (command.includes("pico2wave")) {
-      await execFilePromise(command, ["-l", voice || "zh-CN", "-w", outputPath, text], options);
-      return;
-    }
-
-    await execFilePromise(command, ["-v", voice, "-s", wordsPerMinute, "-w", outputPath, text], options);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (/ENOENT|not found|no such file/iu.test(message)) {
-      throw new Error("Linux 本机语音合成不可用：请安装 espeak-ng，或设置 AIRADIO_LINUX_TTS_CMD 指向可输出 wav 的 TTS 命令");
-    }
-    throw new Error(`Linux 本机语音合成失败：${message}`);
-  }
-}
-
-function runLocalSpeech(options) {
-  return process.platform === "win32" ? runWindowsSpeech(options) : runLinuxSpeech(options);
-}
-
-async function synthesizeWithLocalSpeech(config, script, programId, segments = []) {
-  const safeSegments = localSpeechSegments(script, segments);
-  const buffers = [];
-  const segmentAudios = [];
-
-  for (const [index, segment] of safeSegments.entries()) {
-    const segmentFileName = `${programId}-local-${index + 1}.wav`;
-    const segmentAudioPath = path.join(audioDir, segmentFileName);
-    await runLocalSpeech({
-      outputPath: segmentAudioPath,
-      rate: localSpeechRate(config.speed, segment),
-      text: sanitizeSpokenText(segment.text),
-      voiceName: config.windowsVoice || "",
-    });
-    const buffer = fs.readFileSync(segmentAudioPath);
-    buffers.push(buffer);
-    segmentAudios.push({
-      ...segment,
-      audioPath: segmentAudioPath,
-      audioUrl: `/storage/audio/${segmentFileName}`,
-      duration: spokenSegmentDuration(buffer, segment.text),
-    });
-  }
-
-  const fileName = `${programId}.wav`;
-  const audioPath = path.join(audioDir, fileName);
-  fs.writeFileSync(audioPath, concatWav(buffers));
-  return {
-    audioPath,
-    audioUrl: `/storage/audio/${fileName}`,
-    contentType: "audio/wav",
-    fallback: process.platform === "win32" ? "windows-speech" : "linux-speech",
-    segments: segmentAudios,
-  };
 }
 
 function stripDataUrlPrefix(value) {
@@ -1367,6 +1917,32 @@ function parseScriptPayload(content, hosts) {
   };
 }
 
+function directScriptPayload(content, hostsInput) {
+  const script = String(content ?? "").trim();
+  if (!script) {
+    throw new Error("原文直出配音需要填写完整原文");
+  }
+  const hosts = normalizeHosts(hostsInput);
+  const paragraphs = script
+    .split(/\n{2,}/u)
+    .map((text) => text.trim())
+    .filter(Boolean);
+  const safeParagraphs = paragraphs.length ? paragraphs : [script];
+  return {
+    script: safeParagraphs.join("\n\n"),
+    segments: safeParagraphs.map((text, index) => {
+      const host = hosts[index % hosts.length];
+      return {
+        hostId: host.id,
+        hostName: host.name,
+        text,
+        style: host.tone,
+      };
+    }),
+    title: "",
+  };
+}
+
 async function generateScript(config, input) {
   const missing = validateServiceConfig(config);
   if (missing.length) {
@@ -1525,7 +2101,7 @@ async function synthesizeWithMimo(config, script, programId, segments = []) {
   };
 }
 
-async function synthesizeWithSpeechEndpoint(config, script, programId) {
+async function synthesizeWithSpeechEndpoint(config, script, programId, segments = []) {
   const missing = validateTtsConfig(config);
   if (missing.length) {
     throw new Error(`通用语音接口配置缺少：${missing.join("、")}`);
@@ -1546,6 +2122,11 @@ async function synthesizeWithSpeechEndpoint(config, script, programId) {
         input: script,
         response_format: config.format || "mp3",
         speed: Number(config.speed ?? 1),
+        ...(
+          String(config.stylePrompt ?? segments?.[0]?.style ?? "").trim() && /gpt.*tts|tts.*gpt/iu.test(String(config.model ?? ""))
+            ? { instructions: String(config.stylePrompt ?? segments?.[0]?.style).trim() }
+            : {}
+        ),
       }),
     },
     "通用语音接口",
@@ -1732,13 +2313,6 @@ async function synthesizeWithElevenLabs(config, script, programId) {
 
 async function synthesizeSpeech(config, script, programId, segments) {
   const engine = ttsEngine(config);
-  if (engine === "local") {
-    return synthesizeWithLocalSpeech(config, script, programId, segments);
-  }
-
-  // 仅当用户显式选择“本机兜底”引擎时才使用系统语音；
-  // 其它引擎（MiMo/Azure/Google/ElevenLabs/通用接口）失败时直接抛出真实错误，
-  // 不再静默回退到本机系统语音，避免把配置或鉴权问题掩盖成“配音成功”。
   if (engine === "mimo") {
     return await synthesizeWithMimo(config, script, programId, segments);
   }
@@ -1752,7 +2326,18 @@ async function synthesizeSpeech(config, script, programId, segments) {
     return await synthesizeWithElevenLabs(config, script, programId);
   }
 
-  return await synthesizeWithSpeechEndpoint(config, script, programId);
+  return await synthesizeWithSpeechEndpoint(config, script, programId, segments);
+}
+
+function applyVoiceStylePrompt(segments, voicePrompt, fallback = "") {
+  const prompt = String(voicePrompt ?? fallback ?? "").trim();
+  if (!Array.isArray(segments)) {
+    return [];
+  }
+  return segments.map((segment) => ({
+    ...segment,
+    style: prompt || String(segment?.style ?? "").trim(),
+  }));
 }
 
 function synthesizedSegments(originalSegments, audio) {
@@ -1793,6 +2378,14 @@ function rowToProgram(row) {
     sortOrder: row.sort_order,
     sourceType: row.source_type ?? "generated",
     pluginId: row.plugin_id,
+    programPresetId: row.program_preset_id ?? null,
+    musicPlaylistId: row.music_playlist_id ?? null,
+    playbackMode: row.playback_mode === "shuffle" || row.playback_mode === "sequential"
+      ? row.playback_mode
+      : null,
+    playbackResetAt: row.playback_reset_at ?? null,
+    restartFromBeginning: row.restart_from_beginning === 1,
+    fillerTimeline: parseJsonArray(row.filler_timeline_json),
     status: row.status,
     audioUrl: row.audio_url,
     audioPath: row.audio_path,
@@ -1809,13 +2402,15 @@ function insertProgram(program) {
     INSERT INTO programs (
       id, title, host, prompt, script, status, audio_url, audio_path,
       segments_json, playlist_json, sort_order, scheduled_at, source_type, plugin_id,
-      category_id, playback_speed, publish_date, published_at,
+      category_id, playback_speed, publish_date, published_at, music_playlist_id, playback_mode, program_preset_id,
+      playback_reset_at, restart_from_beginning, filler_timeline_json,
       llm_model, tts_model, error_message, created_at, updated_at
     )
     VALUES (
       @id, @title, @host, @prompt, @script, @status, @audioUrl, @audioPath,
       @segmentsJson, @playlistJson, @sortOrder, @scheduledAt, @sourceType, @pluginId,
-      @categoryId, @playbackSpeed, @publishDate, @publishedAt,
+      @categoryId, @playbackSpeed, @publishDate, @publishedAt, @musicPlaylistId, @playbackMode, @programPresetId,
+      @playbackResetAt, @restartFromBeginning, @fillerTimelineJson,
       @llmModel, @ttsModel, @errorMessage, @createdAt, @updatedAt
     )
   `).run({
@@ -1825,6 +2420,12 @@ function insertProgram(program) {
     playbackSpeed: normalizePlaybackSpeed(program.playbackSpeed),
     publishDate: program.publishDate ?? null,
     publishedAt: program.publishedAt ?? null,
+    musicPlaylistId: String(program.musicPlaylistId ?? "").trim() || null,
+    playbackMode: program.playbackMode ? normalizeMusicPlaybackMode(program.playbackMode) : null,
+    playbackResetAt: program.playbackResetAt ?? null,
+    restartFromBeginning: program.restartFromBeginning ? 1 : 0,
+    fillerTimelineJson: program.fillerTimelineJson ?? JSON.stringify(program.fillerTimeline ?? []),
+    programPresetId: String(program.programPresetId ?? "").trim() || null,
   });
 }
 
@@ -1839,7 +2440,9 @@ function updateProgram(id, patch) {
     ...patch,
     segmentsJson: patch.segmentsJson ?? JSON.stringify(patch.segments ?? current.segments ?? []),
     playlistJson: patch.playlistJson ?? JSON.stringify(patch.playlist ?? current.playlist ?? []),
+    fillerTimelineJson: patch.fillerTimelineJson ?? JSON.stringify(patch.fillerTimeline ?? current.fillerTimeline ?? []),
     playbackSpeed: normalizePlaybackSpeed(patch.playbackSpeed ?? current.playbackSpeed),
+    restartFromBeginning: (patch.restartFromBeginning ?? current.restartFromBeginning) ? 1 : 0,
     updatedAt: nowIso(),
   };
 
@@ -1860,6 +2463,12 @@ function updateProgram(id, patch) {
         playback_speed = @playbackSpeed,
         publish_date = @publishDate,
         published_at = @publishedAt,
+        music_playlist_id = @musicPlaylistId,
+        playback_mode = @playbackMode,
+        program_preset_id = @programPresetId,
+        playback_reset_at = @playbackResetAt,
+        restart_from_beginning = @restartFromBeginning,
+        filler_timeline_json = @fillerTimelineJson,
         scheduled_at = @scheduledAt,
         sort_order = @sortOrder,
         llm_model = @llmModel,
@@ -2168,7 +2777,9 @@ function archiveDateForProgram(program) {
 }
 
 function archiveProgram(program, archiveDate = archiveDateForProgram(program)) {
-  if (!program?.id || !String(program.script ?? "").trim()) {
+  const hasMusic = Array.isArray(program?.playlist)
+    && program.playlist.some((item) => item?.type === "song" && item?.audioUrl);
+  if (!program?.id || (!String(program.script ?? "").trim() && !hasMusic)) {
     return null;
   }
 
@@ -2373,6 +2984,52 @@ function updateProgramContent(id, script, segments) {
   });
 
   return readProgramById(id);
+}
+
+async function regenerateProgramAudio(programId, options = {}) {
+  const config = readConfig();
+  const existing = readProgramById(programId);
+  if (!existing) {
+    return null;
+  }
+  const voicePrompt = String(options.voicePrompt ?? "").trim();
+  const segments = applyVoiceStylePrompt(existing.segments, voicePrompt, config.tts.defaultStylePrompt);
+  deleteAudioFile(existing);
+  try {
+    const audio = await synthesizeSpeech(
+      {
+        ...config.tts,
+        speed: normalizePlaybackSpeed(existing.playbackSpeed ?? config.tts.speed),
+        stylePrompt: voicePrompt || config.tts.defaultStylePrompt,
+      },
+      existing.script,
+      existing.id,
+      segments,
+    );
+    const nextSegments = synthesizedSegments(segments, audio);
+    const program = updateProgram(existing.id, {
+      status: "ready",
+      audioUrl: `${audio.audioUrl}?v=${Date.now()}`,
+      audioPath: audio.audioPath,
+      segmentsJson: JSON.stringify(nextSegments),
+      errorMessage: null,
+    });
+    archiveProgram(program);
+    return program;
+  } catch (error) {
+    const program = updateProgram(existing.id, {
+      status: "script_saved",
+      audioUrl: null,
+      audioPath: null,
+      segmentsJson: JSON.stringify(segments),
+      errorMessage: error instanceof Error ? error.message : String(error),
+    });
+    archiveProgram(program);
+    if (error && typeof error === "object") {
+      error.program = program;
+    }
+    throw error;
+  }
 }
 
 function deleteAudioFile(program) {
@@ -2755,6 +3412,401 @@ function loadKugouApi() {
   return requireCjs(apiPath);
 }
 
+function loadNeteaseApi() {
+  const apiPath = path.join(projectRoot, "NeteaseCloudMusicApi", "main.js");
+  if (!fs.existsSync(apiPath)) {
+    throw new Error("未找到 NeteaseCloudMusicApi/main.js");
+  }
+  return requireCjs(apiPath);
+}
+
+function loadQQMusicApi() {
+  const apiPath = path.join(projectRoot, "QQMusicApi", "node", "index.js");
+  if (!fs.existsSync(apiPath)) {
+    throw new Error("未找到 QQMusicApi/node/index.js");
+  }
+  return requireCjs(apiPath);
+}
+
+const MUSIC_PROVIDER_LABELS = {
+  kugou: "酷狗音乐",
+  netease: "网易云音乐",
+  qq: "QQ 音乐",
+};
+
+const qqQrSessions = new Map();
+
+function hash33(value, seed = 0) {
+  let hash = seed;
+  for (const character of String(value ?? "")) {
+    hash += (hash << 5) + character.charCodeAt(0);
+    hash &= 0x7fffffff;
+  }
+  return hash & 0x7fffffff;
+}
+
+function responseSetCookies(response) {
+  if (typeof response?.headers?.getSetCookie === "function") {
+    return response.headers.getSetCookie();
+  }
+  const value = response?.headers?.get?.("set-cookie");
+  return value ? [value] : [];
+}
+
+function cookieHeaderFromResponse(response, seed = "") {
+  return cookieToHeader(mergeCookieValues(seed, responseSetCookies(response)));
+}
+
+async function createQQLoginQr(loginType = "wx") {
+  if (loginType === "wx") {
+    const authorizeResponse = await fetch("https://open.weixin.qq.com/connect/qrconnect?" + new URLSearchParams({
+      appid: "wx48db31d50e334801",
+      redirect_uri: "https://y.qq.com/portal/wx_redirect.html?login_type=2&surl=https://y.qq.com/",
+      response_type: "code",
+      scope: "snsapi_login",
+      state: "STATE",
+      href: "https://y.qq.com/mediastyle/music_v17/src/css/popup_wechat.css#wechat_redirect",
+    }));
+    if (!authorizeResponse.ok) {
+      throw new Error(`QQ 音乐微信二维码请求失败：HTTP ${authorizeResponse.status}`);
+    }
+    const uuid = String(await authorizeResponse.text()).match(/uuid=(.+?)"/u)?.[1];
+    if (!uuid) {
+      throw new Error("QQ 音乐微信二维码未返回 uuid");
+    }
+    const qrResponse = await fetch(`https://open.weixin.qq.com/connect/qrcode/${encodeURIComponent(uuid)}`, {
+      headers: { Referer: "https://open.weixin.qq.com/connect/qrconnect" },
+    });
+    if (!qrResponse.ok) {
+      throw new Error(`QQ 音乐微信二维码图片请求失败：HTTP ${qrResponse.status}`);
+    }
+    const key = randomUUID();
+    qqQrSessions.set(key, { createdAt: Date.now(), loginType: "wx", uuid });
+    return {
+      key,
+      loginType: "wx",
+      qrImage: `data:image/jpeg;base64,${Buffer.from(await qrResponse.arrayBuffer()).toString("base64")}`,
+      qrUrl: "",
+    };
+  }
+  const qrResponse = await fetch("https://ssl.ptlogin2.qq.com/ptqrshow?" + new URLSearchParams({
+    appid: "716027609",
+    e: "2",
+    l: "M",
+    s: "3",
+    d: "72",
+    v: "4",
+    t: String(Math.random()),
+    daid: "383",
+    pt_3rd_aid: "100497308",
+  }), {
+    headers: { Referer: "https://xui.ptlogin2.qq.com/" },
+  });
+  if (!qrResponse.ok) {
+    throw new Error(`QQ 登录二维码请求失败：HTTP ${qrResponse.status}`);
+  }
+  const responseCookies = mergeCookieValues(responseSetCookies(qrResponse));
+  const qrsig = String(responseCookies.qrsig ?? "").trim();
+  if (!qrsig) {
+    throw new Error("QQ 登录二维码未返回 qrsig");
+  }
+  const key = randomUUID();
+  qqQrSessions.set(key, { createdAt: Date.now(), loginType: "qq", qrsig });
+  return {
+    key,
+    loginType: "qq",
+    qrImage: `data:image/png;base64,${Buffer.from(await qrResponse.arrayBuffer()).toString("base64")}`,
+    qrUrl: "",
+  };
+}
+
+function saveQQMusicCredential(credential, fallbackLoginType) {
+  const musicId = credential.musicid ?? credential.str_musicid;
+  const musicKey = credential.musickey;
+  if (!musicId || !musicKey) {
+    throw new Error("QQ 音乐登录响应缺少 musicid 或 musickey");
+  }
+  const cookie = cookieToHeader({
+    uin: String(musicId),
+    qqmusic_key: String(musicKey),
+    qm_keyst: String(musicKey),
+    login_type: String(credential.loginType ?? fallbackLoginType),
+  });
+  loadQQMusicApi().setCookie(cookie);
+  return cookie;
+}
+
+async function requestQQMusicLogin({ comm, method, module, param }) {
+  const payload = {
+    comm: {
+      ct: 24,
+      cv: 4747474,
+      platform: "yqq.json",
+      chid: "0",
+      uin: 0,
+      g_tk: 5381,
+      g_tk_new_20200303: 5381,
+      format: "json",
+      inCharset: "utf-8",
+      outCharset: "utf-8",
+      notice: 0,
+      needNewCode: 1,
+      ...comm,
+    },
+    req_0: { module, method, param },
+  };
+  const response = await fetch("https://u.y.qq.com/cgi-bin/musicu.fcg", {
+    body: JSON.stringify(payload),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+  const body = await response.json();
+  const result = body?.req_0;
+  if (!response.ok || Number(result?.code ?? -1) !== 0) {
+    throw new Error(result?.message || result?.msg || `QQ 音乐登录失败：${result?.code ?? response.status}`);
+  }
+  return result?.data ?? {};
+}
+
+function parseQQLoginStatus(text) {
+  const callback = String(text ?? "").match(/ptuiCB\((.*?)\)/u);
+  if (!callback) {
+    throw new Error("QQ 登录状态响应无法解析");
+  }
+  const args = Array.from(callback[1].matchAll(/'((?:\\.|[^'])*)'/gu), (match) => match[1]);
+  const code = Number(args[0]);
+  const statusMap = {
+    0: { status: 4, message: "QQ 音乐登录成功" },
+    65: { status: 0, message: "QQ 登录二维码已过期" },
+    66: { status: 1, message: "等待使用 QQ 扫码" },
+    67: { status: 2, message: "已扫码，等待手机确认" },
+    68: { status: 0, message: "已在手机端取消登录" },
+  };
+  return { args, ...(statusMap[code] ?? { status: 1, message: args[4] || `QQ 登录状态 ${code}` }) };
+}
+
+async function authorizeQQMusicLogin(session, loginArgs) {
+  const redirectUrl = String(loginArgs[2] ?? "");
+  const parsedRedirect = new URL(redirectUrl);
+  const uin = parsedRedirect.searchParams.get("uin");
+  const sigx = parsedRedirect.searchParams.get("ptsigx");
+  if (!uin || !sigx) {
+    throw new Error("QQ 扫码成功，但缺少授权参数");
+  }
+  const checkSigResponse = await fetch("https://ssl.ptlogin2.graph.qq.com/check_sig?" + new URLSearchParams({
+    uin,
+    pttype: "1",
+    service: "ptqrlogin",
+    nodirect: "0",
+    ptsigx: sigx,
+    s_url: "https://graph.qq.com/oauth2.0/login_jump",
+    ptlang: "2052",
+    ptredirect: "100",
+    aid: "716027609",
+    daid: "383",
+    j_later: "0",
+    low_login_hour: "0",
+    regmaster: "0",
+    pt_login_type: "3",
+    pt_aid: "0",
+    pt_aaid: "16",
+    pt_light: "0",
+    pt_3rd_aid: "100497308",
+  }), {
+    headers: {
+      Cookie: `qrsig=${session.qrsig}`,
+      Referer: "https://xui.ptlogin2.qq.com/",
+    },
+    redirect: "manual",
+  });
+  const authorizationCookie = cookieHeaderFromResponse(checkSigResponse, `qrsig=${session.qrsig}`);
+  const pSkey = mergeCookieValues(authorizationCookie).p_skey;
+  if (!pSkey) {
+    throw new Error("QQ 扫码成功，但未获取到 p_skey");
+  }
+  const authorizeBody = new URLSearchParams({
+    response_type: "code",
+    client_id: "100497308",
+    redirect_uri: "https://y.qq.com/portal/wx_redirect.html?login_type=1&surl=https://y.qq.com/",
+    scope: "get_user_info,get_app_friends",
+    state: "state",
+    switch: "",
+    from_ptlogin: "1",
+    src: "1",
+    update_auth: "1",
+    openapi: "1010_1030",
+    g_tk: String(hash33(pSkey, 5381)),
+    auth_time: String(Date.now()),
+    ui: randomUUID(),
+  });
+  const authorizeResponse = await fetch("https://graph.qq.com/oauth2.0/authorize", {
+    body: authorizeBody,
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      Cookie: authorizationCookie,
+    },
+    method: "POST",
+    redirect: "manual",
+  });
+  const location = authorizeResponse.headers.get("location") || "";
+  const code = new URL(location, "https://y.qq.com/").searchParams.get("code");
+  if (!code) {
+    throw new Error("QQ 授权成功，但未获取到 QQ 音乐 code");
+  }
+  const credential = await requestQQMusicLogin({
+    comm: { tmeLoginType: 2 },
+    method: "QQLogin",
+    module: "QQConnectLogin.LoginServer",
+    param: { code },
+  });
+  return saveQQMusicCredential(credential, 2);
+}
+
+async function authorizeQQMusicWechat(code) {
+  const credential = await requestQQMusicLogin({
+    comm: { tmeLoginType: 1 },
+    method: "Login",
+    module: "music.login.LoginServer",
+    param: { code, strAppid: "wx48db31d50e334801" },
+  });
+  return saveQQMusicCredential(credential, 1);
+}
+
+async function checkQQLoginQr(key) {
+  const session = qqQrSessions.get(key);
+  if (!session || Date.now() - session.createdAt > 5 * 60 * 1000) {
+    qqQrSessions.delete(key);
+    return { status: 0, message: "QQ 登录二维码已过期" };
+  }
+  if (session.loginType === "wx") {
+    const checkResponse = await fetch("https://lp.open.weixin.qq.com/connect/l/qrconnect?" + new URLSearchParams({
+      uuid: session.uuid,
+      _: String(Date.now()),
+      ...(session.lastStatus ? { last: String(session.lastStatus) } : {}),
+    }), {
+      headers: { Referer: "https://open.weixin.qq.com/" },
+    });
+    const match = String(await checkResponse.text()).match(/window\.wx_errcode=(\d+);window\.wx_code='([^']*)'/u);
+    if (!match) {
+      throw new Error("QQ 音乐微信扫码状态响应无法解析");
+    }
+    const code = Number(match[1]);
+    session.lastStatus = code;
+    if (code === 405) {
+      const cookie = await authorizeQQMusicWechat(match[2]);
+      qqQrSessions.delete(key);
+      return { status: 4, message: "QQ 音乐登录成功，Cookie 已自动填入并保存", cookie };
+    }
+    if (code === 404) {
+      return { status: 2, message: "微信已扫码，等待手机确认" };
+    }
+    if ([402, 403].includes(code)) {
+      qqQrSessions.delete(key);
+      return { status: 0, message: code === 403 ? "已在手机端取消登录" : "微信登录二维码已过期" };
+    }
+    return { status: 1, message: "等待使用微信扫码" };
+  }
+  const checkResponse = await fetch("https://ssl.ptlogin2.qq.com/ptqrlogin?" + new URLSearchParams({
+    u1: "https://graph.qq.com/oauth2.0/login_jump",
+    ptqrtoken: String(hash33(session.qrsig)),
+    ptredirect: "0",
+    h: "1",
+    t: "1",
+    g: "1",
+    from_ui: "1",
+    ptlang: "2052",
+    action: `0-0-${Date.now()}`,
+    js_ver: "20102616",
+    js_type: "1",
+    pt_uistyle: "40",
+    aid: "716027609",
+    daid: "383",
+    pt_3rd_aid: "100497308",
+    has_onekey: "1",
+  }), {
+    headers: {
+      Cookie: `qrsig=${session.qrsig}`,
+      Referer: "https://xui.ptlogin2.qq.com/",
+    },
+  });
+  const status = parseQQLoginStatus(await checkResponse.text());
+  if (status.status !== 4) {
+    if (status.status === 0) {
+      qqQrSessions.delete(key);
+    }
+    return status;
+  }
+  const cookie = await authorizeQQMusicLogin(session, status.args);
+  qqQrSessions.delete(key);
+  return { status: 4, message: "QQ 音乐登录成功，Cookie 已自动填入并保存", cookie };
+}
+
+function normalizeMusicProvider(value, fallback = "auto") {
+  const provider = String(value ?? "").trim().toLowerCase();
+  return ["auto", "kugou", "netease", "qq"].includes(provider) ? provider : fallback;
+}
+
+function configForMusicProvider(config, provider) {
+  const normalizedProvider = normalizeMusicProvider(provider, config.plugins.kugouMusic.provider);
+  return {
+    ...config,
+    plugins: {
+      ...config.plugins,
+      kugouMusic: {
+        ...config.plugins.kugouMusic,
+        provider: normalizedProvider,
+      },
+    },
+  };
+}
+
+function enabledMusicProviders(config, requestedProvider = "auto") {
+  const requested = normalizeMusicProvider(requestedProvider);
+  const enabled = [
+    config.plugins.kugouMusic?.apiEnabled !== false ? "kugou" : "",
+    config.plugins.neteaseMusic?.enabled !== false ? "netease" : "",
+    config.plugins.qqMusic?.enabled !== false ? "qq" : "",
+  ].filter(Boolean);
+  if (!enabled.length) {
+    throw new Error("没有启用任何音乐 API，请先在接口 API 页面启用至少一个音乐源");
+  }
+  if (requested === "auto") {
+    return enabled;
+  }
+  if (!enabled.includes(requested)) {
+    throw new Error(`${MUSIC_PROVIDER_LABELS[requested] ?? requested} API 未启用`);
+  }
+  return [requested];
+}
+
+async function callNeteaseApi(name, params = {}, options = {}) {
+  const api = loadNeteaseApi();
+  if (typeof api[name] !== "function") {
+    throw new Error(`NeteaseCloudMusicApi 不存在模块：${name}`);
+  }
+  const config = options.config ?? readConfig();
+  const cookie = options.useStoredCookie === false ? "" : String(config.plugins.neteaseMusic?.cookie ?? "");
+  const payload = await api[name]({ ...params, ...(cookie ? { cookie } : {}) });
+  return {
+    body: responseBody(payload),
+    cookie: cookieToHeader(mergeCookieValues(cookie, payload?.cookie, payload?.body?.cookie)),
+    raw: payload,
+  };
+}
+
+async function callQQMusicApi(name, params = {}, options = {}) {
+  const api = loadQQMusicApi();
+  const config = options.config ?? readConfig();
+  const cookie = options.useStoredCookie === false ? "" : String(config.plugins.qqMusic?.cookie ?? "");
+  api.setCookie(cookieToHeader(mergeCookieValues(cookie)));
+  const body = await api.api(String(name).replace(/_/gu, "/"), params);
+  return {
+    body,
+    cookie: cookieToHeader(mergeCookieValues(cookie, api.cookie)),
+    raw: body,
+  };
+}
+
 function readKugouModules() {
   const moduleDir = path.join(projectRoot, "KuGouMusicApi", "module");
   if (!fs.existsSync(moduleDir)) {
@@ -2917,6 +3969,27 @@ function saveKugouCookie(cookie) {
   return { config: next, savedAt };
 }
 
+function saveMusicProviderCookie(provider, cookie) {
+  const normalizedProvider = normalizeMusicProvider(provider, "kugou");
+  if (normalizedProvider === "kugou") {
+    return saveKugouCookie(cookie);
+  }
+  const configKey = normalizedProvider === "netease" ? "neteaseMusic" : "qqMusic";
+  const current = readConfig();
+  const next = mergeConfig({
+    ...current,
+    plugins: {
+      ...current.plugins,
+      [configKey]: {
+        ...current.plugins[configKey],
+        cookie,
+      },
+    },
+  });
+  const savedAt = upsertConfig(next);
+  return { config: next, savedAt };
+}
+
 function pickString(item, keys) {
   for (const key of keys) {
     const value = item?.[key];
@@ -3004,22 +4077,126 @@ function normalizeKugouSong(item) {
     albumAudioId: pickNumber(merged, ["album_audio_id", "mixsongid", "MixSongID", "EMixSongID", "audio_id", "songid"]),
     duration: duration || 240,
     coverUrl: normalizeKugouImage(pickString(merged, ["image", "img", "cover", "cover_url", "album_img", "Image"])),
+    source: "kugou",
+    sourceId: pickString(merged, ["sourceId", "hash", "Hash", "filehash", "FileHash", "audio_hash", "song_hash"]),
     ...(audioUrl ? { audioUrl } : {}),
     ...(lyrics ? { lyrics } : {}),
     raw: merged,
   };
 }
 
+function normalizeNeteaseSong(item) {
+  const artists = Array.isArray(item?.ar) ? item.ar : Array.isArray(item?.artists) ? item.artists : [];
+  const album = item?.al ?? item?.album ?? {};
+  const durationValue = pickNumber(item, ["dt", "duration"]);
+  const sourceId = pickString(item, ["sourceId", "id"]);
+  return {
+    title: pickString(item, ["name", "title"]) || "未命名歌曲",
+    artist: artists.map((artist) => artist?.name).filter(Boolean).join(" / ") || pickString(item, ["artist"]) || "音乐人",
+    albumId: pickNumber(album, ["id"]),
+    duration: durationValue > 1000 ? Math.round(durationValue / 1000) : (durationValue || 240),
+    coverUrl: normalizeKugouImage(pickString(album, ["picUrl", "blurPicUrl"])),
+    source: "netease",
+    sourceId,
+    ...(pickString(item, ["audioUrl", "url"]) ? { audioUrl: pickString(item, ["audioUrl", "url"]) } : {}),
+    ...(pickString(item, ["lyrics", "lyric"]) ? { lyrics: pickString(item, ["lyrics", "lyric"]) } : {}),
+    raw: item,
+  };
+}
+
+function normalizeQQMusicSong(item) {
+  const track = item?.track_info ?? item;
+  const singers = Array.isArray(track?.singer) ? track.singer : [];
+  const album = track?.album ?? {};
+  const sourceId = pickString(track, ["sourceId", "mid", "songmid"]);
+  const mediaId = pickString(track?.file ?? track, ["media_mid", "mediaId"]);
+  const albumMid = pickString(album, ["mid", "pmid"]);
+  return {
+    title: pickString(track, ["title", "name"]) || "未命名歌曲",
+    artist: singers.map((singer) => singer?.name).filter(Boolean).join(" / ") || pickString(track, ["singer", "artist"]) || "音乐人",
+    albumId: pickNumber(album, ["id"]),
+    duration: pickNumber(track, ["interval", "duration"]) || 240,
+    coverUrl: normalizeKugouImage(
+      pickString(track, ["pic", "coverUrl"]) || (albumMid ? `https://y.gtimg.cn/music/photo_new/T002R300x300M000${albumMid.replace(/_\d+$/u, "")}.jpg` : ""),
+    ),
+    mediaId,
+    source: "qq",
+    sourceId,
+    ...(pickString(track, ["audioUrl", "url"]) ? { audioUrl: pickString(track, ["audioUrl", "url"]) } : {}),
+    ...(pickString(track, ["lyrics", "lyric"]) ? { lyrics: pickString(track, ["lyrics", "lyric"]) } : {}),
+    raw: track,
+  };
+}
+
+function normalizeMusicSong(item) {
+  const provider = normalizeMusicProvider(item?.source, "kugou");
+  if (provider === "netease") {
+    return normalizeNeteaseSong(item);
+  }
+  if (provider === "qq") {
+    return normalizeQQMusicSong(item);
+  }
+  return normalizeKugouSong(item);
+}
+
 function dedupeKugouSongs(songs) {
   const seen = new Set();
   return songs.filter((song) => {
-    const key = song.hash || `${song.title}-${song.artist}`;
+    const key = `${song.source ?? "kugou"}:${song.sourceId || song.hash || song.albumAudioId || `${song.title}-${song.artist}`}`;
     if (seen.has(key)) {
       return false;
     }
     seen.add(key);
     return true;
   });
+}
+
+function normalizeMusicPlaybackMode(value, fallback = "sequential") {
+  const mode = String(value ?? "").trim().toLowerCase();
+  if (mode === "shuffle" || mode === "sequential") {
+    return mode;
+  }
+  return fallback === "shuffle" ? "shuffle" : "sequential";
+}
+
+function normalizeMusicPlaylistSongs(songs) {
+  return dedupeKugouSongs(
+    (Array.isArray(songs) ? songs : [])
+      .filter((song) => song && typeof song === "object")
+      .map(normalizeMusicSong)
+      .filter((song) => (
+        song.hash ||
+        song.sourceId ||
+        song.albumAudioId ||
+        song.audioUrl ||
+        song.title !== "未命名歌曲" ||
+        song.artist !== "音乐人"
+      )),
+  );
+}
+
+function rowToMusicPlaylist(row) {
+  if (!row) {
+    return null;
+  }
+  const songs = normalizeMusicPlaylistSongs(parseJsonArray(row.songs_json));
+  return {
+    id: row.id,
+    name: row.name,
+    songs,
+    songCount: songs.length,
+    playbackMode: normalizeMusicPlaybackMode(row.playback_mode),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function readMusicPlaylistById(id) {
+  const playlistId = String(id ?? "").trim();
+  if (!playlistId) {
+    return null;
+  }
+  return rowToMusicPlaylist(db.prepare("SELECT * FROM music_playlists WHERE id = ?").get(playlistId));
 }
 
 function extractAudioUrl(payload) {
@@ -3117,16 +4294,126 @@ async function fetchKugouLyrics(config, song) {
   }
 }
 
+async function fetchNeteaseLyrics(config, song) {
+  if (!song.sourceId) {
+    return "";
+  }
+  try {
+    const result = await callNeteaseApi("lyric", { id: song.sourceId }, { config });
+    return normalizeLyricText(result.body?.lrc?.lyric ?? result.body?.klyric?.lyric ?? "");
+  } catch {
+    return "";
+  }
+}
+
+async function fetchQQMusicLyrics(config, song) {
+  if (!song.sourceId) {
+    return "";
+  }
+  try {
+    const result = await callQQMusicApi("lyric", { songmid: song.sourceId }, { config });
+    return normalizeLyricText(result.body?.lyric ?? "");
+  } catch {
+    return "";
+  }
+}
+
+async function fetchMusicLyrics(config, song) {
+  const normalized = normalizeMusicSong(song);
+  if (normalized.source === "netease") {
+    return fetchNeteaseLyrics(config, normalized);
+  }
+  if (normalized.source === "qq") {
+    return fetchQQMusicLyrics(config, normalized);
+  }
+  return fetchKugouLyrics(config, normalized);
+}
+
 async function attachLyricsToSongs(config, songs) {
   const withLyrics = [];
   for (const song of songs) {
-    const lyrics = await fetchKugouLyrics(config, song);
+    const lyrics = await fetchMusicLyrics(config, song);
     withLyrics.push({
       ...song,
       lyrics,
     });
   }
   return withLyrics;
+}
+
+async function searchMusicProvider(config, provider, keywords, limit = 20) {
+  const normalizedProvider = normalizeMusicProvider(provider, "kugou");
+  const target = Math.max(1, Math.min(100, Number(limit) || 20));
+  if (normalizedProvider === "netease") {
+    const result = await callNeteaseApi("search", { keywords, limit: target, offset: 0, type: 1 }, { config });
+    return dedupeKugouSongs((result.body?.result?.songs ?? []).map(normalizeNeteaseSong)).slice(0, target);
+  }
+  if (normalizedProvider === "qq") {
+    const result = await callQQMusicApi("search/quick", { key: keywords }, { config });
+    const quickSongs = Array.isArray(result.body?.song?.itemlist) ? result.body.song.itemlist : [];
+    const details = await Promise.all(quickSongs.slice(0, target).map(async (song) => {
+      try {
+        const detail = await callQQMusicApi("song", { songmid: song.mid }, { config });
+        return normalizeQQMusicSong(detail.body?.track_info ?? song);
+      } catch {
+        return normalizeQQMusicSong(song);
+      }
+    }));
+    return dedupeKugouSongs(details).slice(0, target);
+  }
+  const result = await callKugouApi("search", { keywords, page: 1, pagesize: target }, { config });
+  if (result.cookie && result.cookie !== config.plugins.kugouMusic.cookie) {
+    config.plugins.kugouMusic.cookie = result.cookie;
+  }
+  return dedupeKugouSongs(collectKugouSongCandidates(result.body).map(normalizeKugouSong)).slice(0, target);
+}
+
+async function searchMusicSources(config, provider, keywords, limit = 20) {
+  const requestedProvider = normalizeMusicProvider(provider);
+  const providers = enabledMusicProviders(config, requestedProvider);
+  const perProvider = requestedProvider === "auto" ? Math.max(4, Math.ceil(Number(limit || 20) / providers.length)) : Number(limit || 20);
+  const settled = await Promise.allSettled(
+    providers.map((item) => searchMusicProvider(config, item, keywords, perProvider)),
+  );
+  const songs = [];
+  const errors = [];
+  settled.forEach((result, index) => {
+    if (result.status === "fulfilled") {
+      songs.push(...result.value);
+    } else {
+      errors.push(`${MUSIC_PROVIDER_LABELS[providers[index]]}：${result.reason instanceof Error ? result.reason.message : String(result.reason)}`);
+    }
+  });
+  return {
+    errors,
+    providers,
+    songs: dedupeKugouSongs(songs).slice(0, Math.max(1, Number(limit) || 20)),
+  };
+}
+
+async function fetchNeteaseSongsBySource(config, plugin) {
+  const source = String(plugin.source ?? "new");
+  const keywordMap = {
+    classic: "经典老歌",
+    hot: "热门歌曲",
+    new: "新歌",
+    treasure: "小众宝藏",
+  };
+  return searchMusicProvider(
+    config,
+    "netease",
+    source === "search" ? plugin.searchKeywords || "华语流行" : keywordMap[source] || plugin.searchKeywords || "新歌",
+    Math.max(12, Number(plugin.maxSongs ?? 5) * 3),
+  );
+}
+
+async function fetchQQMusicSongsBySource(config, plugin) {
+  if (String(plugin.source ?? "new") === "search") {
+    return searchMusicProvider(config, "qq", plugin.searchKeywords || "华语流行", Math.max(4, Number(plugin.maxSongs ?? 5) * 2));
+  }
+  const typeMap = { classic: 2, hot: 0, new: 0, treasure: 1 };
+  const result = await callQQMusicApi("new/songs", { type: typeMap[plugin.source] ?? 0 }, { config });
+  return dedupeKugouSongs((result.body?.list ?? []).map(normalizeQQMusicSong));
 }
 
 async function fetchKugouSongsBySource(config, plugin) {
@@ -3200,18 +4487,44 @@ async function fetchKugouSongsBySource(config, plugin) {
 async function resolvePlayableKugouSongs(config, songs, quality, targetCount = Number.POSITIVE_INFINITY) {
   const playable = [];
   const candidates = dedupeKugouSongs(songs)
-    .map(normalizeKugouSong)
-    .filter((song) => song.audioUrl || song.hash);
+    .map(normalizeMusicSong)
+    .filter((song) => song.audioUrl || song.hash || song.sourceId);
   for (let index = 0; index < candidates.length && playable.length < targetCount; index += KUGOU_PLAY_URL_CONCURRENCY) {
     const batch = candidates.slice(index, index + KUGOU_PLAY_URL_CONCURRENCY);
     const results = await Promise.all(batch.map(async (song) => {
       if (song.audioUrl) {
         return song;
       }
-      if (!song.hash) {
-        return null;
-      }
       try {
+        if (song.source === "netease") {
+          if (!song.sourceId) {
+            return null;
+          }
+          const level = quality === "flac" ? "lossless" : quality === "320" ? "exhigh" : "standard";
+          const result = await callNeteaseApi("song_url_v1", { id: song.sourceId, level }, { config });
+          const audioUrl = pickString(result.body?.data?.[0] ?? {}, ["url"]);
+          return audioUrl ? { ...song, audioUrl: audioUrl.replace(/^http:/u, "https:") } : null;
+        }
+        if (song.source === "qq") {
+          if (!song.sourceId) {
+            return null;
+          }
+          let resolvedSong = song;
+          if (!resolvedSong.mediaId) {
+            const detail = await callQQMusicApi("song", { songmid: song.sourceId }, { config });
+            resolvedSong = normalizeQQMusicSong(detail.body?.track_info ?? song);
+          }
+          const result = await callQQMusicApi("song/url", {
+            id: resolvedSong.sourceId,
+            mediaId: resolvedSong.mediaId || resolvedSong.sourceId,
+            type: ["128", "320", "flac"].includes(String(quality)) ? String(quality) : "128",
+          }, { config });
+          const audioUrl = typeof result.body === "string" ? result.body : pickString(result.body, ["url", "data"]);
+          return audioUrl ? { ...resolvedSong, audioUrl: audioUrl.replace(/^http:/u, "https:") } : null;
+        }
+        if (!song.hash) {
+          return null;
+        }
         const result = await callKugouApi(
           "song_url",
           {
@@ -3244,10 +4557,10 @@ async function resolvePlayableKugouSongs(config, songs, quality, targetCount = N
 }
 
 function mergeUniqueKugouSongs(...songGroups) {
-  return dedupeKugouSongs(songGroups.flat().filter(Boolean).map(normalizeKugouSong));
+  return dedupeKugouSongs(songGroups.flat().filter(Boolean).map(normalizeMusicSong));
 }
 
-async function fetchPlayableKugouSongs(config, plugin, targetCount, manualSongs = [], options = {}) {
+async function fetchPlayableKugouSongsOnly(config, plugin, targetCount, manualSongs = [], options = {}) {
   const songLimit = Math.max(1, Math.min(KUGOU_MAX_PROGRAM_SONGS, Number(targetCount || plugin.maxSongs || 5)));
   const seed = String(options.seed ?? plugin.seed ?? "").trim();
   let candidateSongs = [];
@@ -3324,6 +4637,64 @@ async function fetchPlayableKugouSongs(config, plugin, targetCount, manualSongs 
   return manualPlayable.length && !options.refreshManualPool
     ? mergeUniqueKugouSongs(manualPlayable, finalPlayable).slice(0, songLimit)
     : finalPlayable;
+}
+
+async function fetchPlayableKugouSongs(config, plugin, targetCount, manualSongs = [], options = {}) {
+  const songLimit = Math.max(1, Math.min(KUGOU_MAX_PROGRAM_SONGS, Number(targetCount || plugin.maxSongs || 5)));
+  const provider = normalizeMusicProvider(plugin.provider ?? config.plugins.kugouMusic.provider);
+  const providers = enabledMusicProviders(config, provider);
+  const seed = String(options.seed ?? plugin.seed ?? "").trim();
+  let playable = manualSongs.length
+    ? await resolvePlayableKugouSongs(config, manualSongs, plugin.quality, songLimit)
+    : [];
+  if (playable.length >= songLimit && !options.refreshManualPool) {
+    return options.shuffleManual && seed
+      ? seededShuffle(playable, `${seed}:manual`, kugouSongKey).slice(0, songLimit)
+      : playable.slice(0, songLimit);
+  }
+
+  if (providers.length === 1 && providers[0] === "kugou") {
+    return fetchPlayableKugouSongsOnly(config, { ...plugin, provider: "kugou" }, songLimit, playable, options);
+  }
+
+  const allCandidates = [];
+  for (const [index, sourceProvider] of providers.entries()) {
+    const remaining = Math.max(1, songLimit - playable.length);
+    const providerTarget = provider === "auto"
+      ? Math.max(1, Math.ceil(remaining / Math.max(1, providers.length - index)))
+      : remaining;
+    try {
+      let candidates;
+      if (sourceProvider === "kugou") {
+        candidates = await fetchKugouSongsBySource(config, {
+          ...plugin,
+          maxSongs: Math.max(providerTarget, Number(plugin.maxSongs ?? providerTarget)),
+          seed: seed ? `${seed}:kugou` : "",
+        });
+      } else if (sourceProvider === "netease") {
+        candidates = await fetchNeteaseSongsBySource(config, { ...plugin, maxSongs: providerTarget });
+      } else {
+        candidates = await fetchQQMusicSongsBySource(config, { ...plugin, maxSongs: providerTarget });
+      }
+      allCandidates.push(...candidates);
+      const ordered = seed
+        ? seededShuffle(candidates, `${seed}:${sourceProvider}`, kugouSongKey)
+        : candidates;
+      const resolved = await resolvePlayableKugouSongs(config, ordered, plugin.quality, providerTarget);
+      playable = mergeUniqueKugouSongs(playable, resolved).slice(0, songLimit);
+    } catch {
+      // A mixed-source request keeps working when one upstream API is unavailable.
+    }
+  }
+
+  if (playable.length < songLimit && allCandidates.length) {
+    const ordered = seed
+      ? seededShuffle(allCandidates, `${seed}:all-providers`, kugouSongKey)
+      : allCandidates;
+    const resolved = await resolvePlayableKugouSongs(config, ordered, plugin.quality, songLimit);
+    playable = mergeUniqueKugouSongs(playable, resolved).slice(0, songLimit);
+  }
+  return playable;
 }
 
 function parseAiSongListPayload(content) {
@@ -3403,7 +4774,7 @@ function scoreKugouSongMatch(candidate, song) {
   } else if (candidateArtist && (songArtist.includes(candidateArtist) || candidateArtist.includes(songArtist))) {
     score += 2;
   }
-  if (song.hash) {
+  if (song.hash || song.sourceId) {
     score += 1;
   }
   return score;
@@ -3475,7 +4846,7 @@ async function generateAiHotSongCandidates(config, targetCount = AI_HOT_SONG_TAR
   const collected = [];
   const seen = new Set();
   const avoided = Array.isArray(avoidSongs)
-    ? avoidSongs.map(normalizeKugouSong).filter((song) => song.title || song.artist)
+    ? avoidSongs.map(normalizeMusicSong).filter((song) => song.title || song.artist)
     : [];
   for (const song of avoided) {
     const key = canonicalSongText(`${song.artist}-${song.title}`);
@@ -3515,12 +4886,12 @@ async function generateAiHotSongCandidates(config, targetCount = AI_HOT_SONG_TAR
 
 async function hydrateKugouSongsBySearch(config, songs, targetCount = AI_HOT_SONG_TARGET) {
   const hydrated = [];
-  const normalized = songs.map(normalizeKugouSong).filter((song) => song.title || song.hash || song.albumAudioId || song.audioUrl);
+  const normalized = songs.map(normalizeMusicSong).filter((song) => song.title || song.hash || song.sourceId || song.albumAudioId || song.audioUrl);
 
   for (let index = 0; index < normalized.length && hydrated.length < targetCount; index += KUGOU_PLAY_URL_CONCURRENCY) {
     const batch = normalized.slice(index, index + KUGOU_PLAY_URL_CONCURRENCY);
     const results = await Promise.all(batch.map(async (song) => {
-      if (song.audioUrl || song.hash) {
+      if (song.audioUrl || song.hash || song.sourceId) {
         return song;
       }
       const found = await searchKugouSongForAiCandidate(config, song);
@@ -3538,11 +4909,8 @@ async function searchKugouSongForAiCandidate(config, candidate) {
     return null;
   }
   try {
-    const result = await callKugouApi("search", { keywords, page: 1, pagesize: 6 }, { config });
-    if (result.cookie && result.cookie !== config.plugins.kugouMusic.cookie) {
-      config.plugins.kugouMusic.cookie = result.cookie;
-    }
-    const songs = collectKugouSongCandidates(result.body).map(normalizeKugouSong);
+    const result = await searchMusicSources(config, config.plugins.kugouMusic.provider, keywords, 9);
+    const songs = result.songs;
     return songs
       .sort((a, b) => scoreKugouSongMatch(candidate, b) - scoreKugouSongMatch(candidate, a))[0] ?? null;
   } catch {
@@ -3550,7 +4918,8 @@ async function searchKugouSongForAiCandidate(config, candidate) {
   }
 }
 
-async function resolveAiGeneratedHotSongs(config, candidates, targetCount = AI_HOT_SONG_TARGET) {
+async function resolveAiGeneratedHotSongs(config, candidates, targetCount = AI_HOT_SONG_TARGET, provider) {
+  config = configForMusicProvider(config, provider);
   const plugin = {
     ...config.plugins.kugouMusic,
     maxSongs: targetCount,
@@ -3580,7 +4949,7 @@ async function resolveAiGeneratedHotSongs(config, candidates, targetCount = AI_H
   }
 
   if (!playable.length) {
-    throw new Error("热门歌曲已生成，但酷狗未解析到可播放地址，请检查酷狗登录态");
+    throw new Error("热门歌曲已生成，但音乐接口未解析到可播放地址，请检查所选音乐源登录态");
   }
   return playable.slice(0, targetCount);
 }
@@ -3680,6 +5049,8 @@ async function buildKugouProgram(config, options = {}) {
   const playbackSpeed = normalizePlaybackSpeed(options.playbackSpeed ?? config.tts.speed);
   const scheduledAt = normalizeScheduledAt(options.scheduledAt);
   const publishDate = normalizePublishDate(options.publishDate);
+  const musicPlaylistId = String(options.musicPlaylistId ?? "").trim() || null;
+  const playbackMode = normalizeMusicPlaybackMode(options.playbackMode);
   const id = randomUUID();
   const createdAt = nowIso();
   const title =
@@ -3692,8 +5063,15 @@ async function buildKugouProgram(config, options = {}) {
           ? "小众宝藏 · 歌单连播"
           : "新歌速递 · 歌单连播");
 
-  const manualSongs = Array.isArray(options.songs)
-    ? options.songs.map(normalizeKugouSong).filter((song) => song.title || song.hash || song.albumAudioId || song.audioUrl)
+  const normalizedManualSongs = normalizeMusicPlaylistSongs(options.songs);
+  const orderedManualSongs = orderMusicPlaylistSongs(
+    normalizedManualSongs,
+    playbackMode,
+    publishDate,
+    musicPlaylistId,
+  );
+  const manualSongs = orderedManualSongs.length
+    ? await hydrateKugouSongsBySearch(config, orderedManualSongs, orderedManualSongs.length)
     : [];
   const configuredSongLimit = Math.max(1, Math.min(KUGOU_MAX_PROGRAM_SONGS, Number(plugin.maxSongs ?? 5)));
   const songLimit = options.topUpManualSongs
@@ -3716,7 +5094,7 @@ async function buildKugouProgram(config, options = {}) {
       seed: songSeed,
     });
   }
-  if (!playableSongs.length && (useAiScript || options.allowAiSongFallback)) {
+  if (!playableSongs.length && !musicPlaylistId && (useAiScript || options.allowAiSongFallback)) {
     try {
       const candidates = await generateAiHotSongCandidates(
         config.llm,
@@ -3732,7 +5110,7 @@ async function buildKugouProgram(config, options = {}) {
     }
   }
   if (!playableSongs.length) {
-    throw new Error("酷狗未返回可播放的歌曲，请检查登录态或更换来源/关键词");
+    throw new Error("所选音乐接口未返回可播放歌曲，请检查登录态或更换音乐源/关键词");
   }
   const playlistSongs = useAiScript || options.attachLyrics ? await attachLyricsToSongs(config, playableSongs) : playableSongs;
 
@@ -3741,9 +5119,9 @@ async function buildKugouProgram(config, options = {}) {
   }
 
   // useAiScript 同时控制是否生成串场：取消勾选时生成纯音乐节目，不添加任何 AI 串场与配音。
-  const segments = useAiScript
+  const segments = applyVoiceStylePrompt(useAiScript
     ? await generateMusicShowSegments(config.llm, playlistSongs, host, title, useAiScript, { publishDate, scheduledAt })
-    : [];
+    : [], options.voicePrompt, config.tts.defaultStylePrompt);
   const playlist = [];
   const ttsErrors = [];
   if (fallbackSource) {
@@ -3779,9 +5157,11 @@ async function buildKugouProgram(config, options = {}) {
       duration: song.duration,
       hash: song.hash,
       lyrics: song.lyrics,
+      mediaId: song.mediaId,
       albumId: song.albumId,
       albumAudioId: song.albumAudioId,
-      source: "kugou",
+      source: song.source || "kugou",
+      sourceId: song.sourceId,
     });
   }
 
@@ -3810,6 +5190,11 @@ async function buildKugouProgram(config, options = {}) {
     publishedAt: publishDate ? createdAt : null,
     sourceType: options.sourceType || "plugin",
     pluginId: options.pluginId || "kugou-music",
+    programPresetId: options.programPresetId,
+    musicPlaylistId,
+    playbackMode: options.playbackMode ? playbackMode : null,
+    playbackResetAt: options.restartFromBeginning && playbackMode === "sequential" ? createdAt : null,
+    restartFromBeginning: Boolean(options.restartFromBeginning && playbackMode === "sequential"),
     llmModel: plugin.useAiScript ? config.llm.model : "规则编排",
     ttsModel: plugin.useAiScript ? config.tts.model : null,
     errorMessage: errorMessages.length ? errorMessages[0] : null,
@@ -3872,19 +5257,23 @@ app.post("/api/hosts/:id/voice-preview", async (request, response) => {
 
 app.get("/api/music/lyrics", async (request, response) => {
   const hash = String(request.query?.hash ?? "").trim();
+  const sourceId = String(request.query?.sourceId ?? "").trim();
   const title = String(request.query?.title ?? "").trim();
-  if (!hash && !title) {
-    response.status(400).json({ message: "缺少歌曲 hash 或标题" });
+  if (!hash && !sourceId && !title) {
+    response.status(400).json({ message: "缺少歌曲标识或标题" });
     return;
   }
 
   try {
     const config = readConfig();
-    const lyrics = await fetchKugouLyrics(config, {
+    const lyrics = await fetchMusicLyrics(config, {
       albumAudioId: Number(request.query?.albumAudioId ?? 0),
       artist: String(request.query?.artist ?? "").trim(),
       duration: Number(request.query?.duration ?? 0),
       hash,
+      mediaId: String(request.query?.mediaId ?? "").trim(),
+      source: normalizeMusicProvider(request.query?.source, "kugou"),
+      sourceId,
       title,
     });
     response.json({
@@ -3894,6 +5283,64 @@ app.get("/api/music/lyrics", async (request, response) => {
   } catch (error) {
     response.status(502).json({
       message: "歌词获取失败",
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
+app.post("/api/programs/:id/playlist/:queueIndex/resolve-audio", async (request, response) => {
+  const program = readProgramById(request.params.id);
+  if (!program) {
+    response.status(404).json({ message: "节目不存在" });
+    return;
+  }
+  const queue = (program.playlist ?? []).filter(
+    (item) => item?.type !== "background" && item?.role !== "background",
+  );
+  const queueIndex = Number(request.params.queueIndex);
+  const item = Number.isInteger(queueIndex) ? queue[queueIndex] : null;
+  if (!item || item.type !== "song") {
+    response.status(400).json({ message: "当前播放项不是可刷新地址的歌曲" });
+    return;
+  }
+  const expectedSource = String(request.body?.expectedSource ?? "").trim();
+  const expectedSourceId = String(request.body?.expectedSourceId ?? "").trim();
+  const expectedTitle = String(request.body?.expectedTitle ?? "").trim();
+  const actualSource = String(item.source ?? "kugou").trim();
+  const actualSourceId = String(item.sourceId ?? item.hash ?? "").trim();
+  if (
+    (expectedSource && expectedSource !== actualSource) ||
+    (expectedSourceId && expectedSourceId !== actualSourceId) ||
+    (!expectedSourceId && expectedTitle && expectedTitle !== item.title)
+  ) {
+    response.status(409).json({ message: "歌单已经更新，请同步最新节目后重试" });
+    return;
+  }
+
+  try {
+    const config = readConfig();
+    const candidate = { ...item };
+    delete candidate.audioUrl;
+    delete candidate.url;
+    const [resolved] = await resolvePlayableKugouSongs(
+      config,
+      [candidate],
+      config.plugins.kugouMusic.quality,
+      1,
+    );
+    if (!resolved?.audioUrl) {
+      throw new Error(`${MUSIC_PROVIDER_LABELS[normalizeMusicProvider(item.source, "kugou")]}未返回可播放地址`);
+    }
+    response.json({
+      audioUrl: resolved.audioUrl,
+      source: resolved.source,
+      sourceId: resolved.sourceId,
+      title: item.title,
+      message: "歌曲播放地址已刷新",
+    });
+  } catch (error) {
+    response.status(502).json({
+      message: "歌曲播放地址刷新失败，请检查音乐源登录态或歌曲权限",
       error: error instanceof Error ? error.message : String(error),
     });
   }
@@ -3959,7 +5406,7 @@ app.post("/api/config", requireAdmin, (request, response) => {
   });
 });
 
-app.post("/api/config/:service/test", requireAdmin, (request, response) => {
+app.post("/api/config/:service/test", requireAdmin, async (request, response) => {
   const service = request.params.service;
   const incomingConfig = request.body?.config;
   const config = incomingConfig ?? readConfig()[service];
@@ -3969,7 +5416,32 @@ app.post("/api/config/:service/test", requireAdmin, (request, response) => {
     return;
   }
 
-  const missing = service === "tts" ? validateTtsConfig(config) : validateServiceConfig(config);
+  const missing = service === "tts"
+    ? validateTtsConfig(config)
+    : service === "suno"
+      ? validateSunoConfig(config)
+      : validateServiceConfig(config);
+  if (service === "suno" && missing.length === 0) {
+    try {
+      const quota = await callSunoApi(config, "/api/get_limit");
+      const resolvedModel = normalizeSunoModel(config.model) === "auto"
+        ? sunoModelForQuota(quota)
+        : normalizeSunoModel(config.model);
+      response.json({
+        ready: true,
+        quota,
+        resolvedModel,
+        message: `本地 suno-api 连接成功${Number.isFinite(Number(quota?.credits_left)) ? `，剩余 ${quota.credits_left} Credits` : ""}，当前使用 ${resolvedModel === "chirp-fenix" ? "v5.5" : "v4.5"}`,
+      });
+      return;
+    } catch (error) {
+      response.status(502).json({
+        ready: false,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+  }
   response.json({
     ready: missing.length === 0,
     message: missing.length === 0 ? "配置已写入后台数据库，可用于生成流程" : `缺少 ${missing.join("、")}`,
@@ -4261,38 +5733,54 @@ app.post("/api/programs/publish-next-day", requireAdmin, (request, response) => 
   response.json({ programs: readProgramList(), publishDate, message: `${publishDate} 节目已发布` });
 });
 
-app.post("/api/programs/:id/push-home", requireAdmin, (request, response) => {
-  const existing = readProgramById(request.params.id);
+app.post("/api/programs/:id/push-home", requireAdmin, async (request, response) => {
+  let existing = readProgramById(request.params.id);
   if (!existing) {
     response.status(404).json({ message: "节目不存在" });
     return;
   }
-  if (existing.status !== "ready" || !existing.audioUrl) {
-    response.status(400).json({ message: "节目还未配音，不能立即推送" });
+
+  try {
+    if (Object.prototype.hasOwnProperty.call(request.body ?? {}, "script")) {
+      const styledSegments = applyVoiceStylePrompt(
+        request.body?.segments,
+        request.body?.voicePrompt,
+        readConfig().tts.defaultStylePrompt,
+      );
+      existing = updateProgramContent(existing.id, request.body?.script, styledSegments) ?? existing;
+    }
+    if (Object.prototype.hasOwnProperty.call(request.body ?? {}, "playbackSpeed")) {
+      existing = updateProgram(existing.id, {
+        playbackSpeed: normalizePlaybackSpeed(request.body?.playbackSpeed),
+      }) ?? existing;
+    }
+    if (existing.status !== "ready" || !existing.audioUrl) {
+      existing = await regenerateProgramAudio(existing.id, { voicePrompt: request.body?.voicePrompt });
+    }
+  } catch (error) {
+    response.status(502).json({
+      message: "最新节目内容保存成功，但重新配音失败",
+      program: error?.program ?? readProgramById(request.params.id),
+      error: error instanceof Error ? error.message : String(error),
+    });
     return;
   }
 
-  const publishDate = String(request.body?.publishDate ?? "").trim() || localDateString();
+  const publishDate = String(existing.publishDate ?? request.body?.publishDate ?? "").trim() || localDateString();
   const publishedAt = nowIso();
-  const pushHome = db.transaction(() => {
-    db.prepare(`
-      UPDATE programs
-      SET sort_order = COALESCE(sort_order, 999999) + 1,
-          updated_at = ?
-      WHERE id <> ?
-        AND publish_date = ?
-    `).run(publishedAt, existing.id, publishDate);
-
-    db.prepare(`
-      UPDATE programs
-      SET publish_date = ?,
-          published_at = ?,
-          sort_order = 1,
-          updated_at = ?
-      WHERE id = ?
-    `).run(publishDate, publishedAt, publishedAt, existing.id);
-  });
-  pushHome();
+  const restartPlaylist = Boolean(
+    isFlowFillerProgram(existing) &&
+    existing.playbackMode === "sequential" &&
+    existing.restartFromBeginning,
+  );
+  db.prepare(`
+    UPDATE programs
+    SET publish_date = ?,
+        published_at = ?,
+        playback_reset_at = ?,
+        updated_at = ?
+    WHERE id = ?
+  `).run(publishDate, publishedAt, restartPlaylist ? publishedAt : existing.playbackResetAt, publishedAt, existing.id);
 
   const program = readProgramById(existing.id);
   archiveProgram(program, publishDate);
@@ -4300,7 +5788,10 @@ app.post("/api/programs/:id/push-home", requireAdmin, (request, response) => {
     program,
     programs: readProgramList(),
     publishDate,
-    message: `${program.title} 已设为 ${publishDate} 优先播放节目`,
+    resetPlayback: restartPlaylist,
+    message: restartPlaylist
+      ? `${program.title} 内容已更新并保持原排期，顺序歌单将从第一首开始播放`
+      : `${program.title} 内容已更新并保持原播出时间与排序`,
   });
 });
 
@@ -4395,7 +5886,6 @@ app.post("/api/programs/:id/rewrite-script", requireAdmin, async (request, respo
 });
 
 app.post("/api/programs/:id/regenerate-tts", requireAdmin, async (request, response) => {
-  const config = readConfig();
   const existing = readProgramById(request.params.id);
   if (!existing) {
     response.status(404).json({ message: "节目不存在" });
@@ -4403,36 +5893,12 @@ app.post("/api/programs/:id/regenerate-tts", requireAdmin, async (request, respo
   }
 
   try {
-    deleteAudioFile(existing);
-    const audio = await synthesizeSpeech(
-      {
-        ...config.tts,
-        speed: normalizePlaybackSpeed(existing.playbackSpeed ?? config.tts.speed),
-      },
-      existing.script,
-      existing.id,
-      existing.segments,
-    );
-    const nextSegments = synthesizedSegments(existing.segments, audio);
-    const program = updateProgram(existing.id, {
-      status: "ready",
-      audioUrl: `${audio.audioUrl}?v=${Date.now()}`,
-      audioPath: audio.audioPath,
-      segmentsJson: JSON.stringify(nextSegments),
-      errorMessage: null,
-    });
-    archiveProgram(program);
+    const program = await regenerateProgramAudio(existing.id, { voicePrompt: request.body?.voicePrompt });
     response.json({ message: "语音已根据最新文稿重新生成", program });
   } catch (error) {
-    const program = updateProgram(existing.id, {
-      status: "script_saved",
-      audioUrl: null,
-      audioPath: null,
-      errorMessage: error instanceof Error ? error.message : String(error),
-    });
     response.status(502).json({
       message: "重新生成语音失败",
-      program,
+      program: error?.program ?? readProgramById(existing.id),
       error: error instanceof Error ? error.message : String(error),
     });
   }
@@ -4496,6 +5962,31 @@ app.post("/api/kugou/call/:name", requireAdmin, async (request, response) => {
   } catch (error) {
     response.status(502).json({
       message: "KuGouMusicApi 调用失败",
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
+app.post("/api/music/call/:provider/:name", requireAdmin, async (request, response) => {
+  const provider = normalizeMusicProvider(request.params.provider, "kugou");
+  const params = request.body?.params ?? request.body ?? {};
+  try {
+    const result = provider === "netease"
+      ? await callNeteaseApi(request.params.name, params)
+      : provider === "qq"
+        ? await callQQMusicApi(request.params.name, params)
+        : await callKugouApi(request.params.name, params);
+    if (result.cookie) {
+      saveMusicProviderCookie(provider, result.cookie);
+    }
+    response.json({
+      body: result.body,
+      cookie: result.cookie,
+      message: `${MUSIC_PROVIDER_LABELS[provider]} API 调用完成`,
+    });
+  } catch (error) {
+    response.status(502).json({
+      message: `${MUSIC_PROVIDER_LABELS[provider]} API 调用失败`,
       error: error instanceof Error ? error.message : String(error),
     });
   }
@@ -4584,6 +6075,88 @@ app.post("/api/plugins/kugou/login/check", requireAdmin, async (request, respons
   }
 });
 
+app.post("/api/plugins/music/:provider/login/qr", requireAdmin, async (request, response) => {
+  const provider = normalizeMusicProvider(request.params.provider, "");
+  if (!['netease', 'qq'].includes(provider)) {
+    response.status(400).json({ message: "该音乐源不支持此扫码入口" });
+    return;
+  }
+  try {
+    if (provider === "qq") {
+      const loginType = request.body?.type === "qq" ? "qq" : "wx";
+      const qr = await createQQLoginQr(loginType);
+      response.json({
+        ...qr,
+        message: loginType === "wx"
+          ? "QQ 音乐微信二维码已生成，请使用微信扫码并确认"
+          : "QQ 音乐 QQ 二维码已生成，请使用 QQ App 内置扫一扫并确认",
+      });
+      return;
+    }
+    const keyResult = await callNeteaseApi("login_qr_key", {}, { useStoredCookie: false });
+    const key = String(keyResult.body?.data?.unikey ?? keyResult.body?.unikey ?? "").trim();
+    if (!key) {
+      throw new Error("网易云音乐未返回二维码 key");
+    }
+    const qrResult = await callNeteaseApi("login_qr_create", { key, qrimg: 1 }, { useStoredCookie: false });
+    const data = qrResult.body?.data ?? qrResult.body ?? {};
+    response.json({
+      key,
+      qrImage: String(data.qrimg ?? ""),
+      qrUrl: String(data.qrurl ?? ""),
+      message: "网易云音乐扫码二维码已生成，请使用网易云音乐 App 扫码",
+    });
+  } catch (error) {
+    response.status(502).json({
+      message: `${MUSIC_PROVIDER_LABELS[provider]}二维码生成失败`,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
+app.post("/api/plugins/music/:provider/login/check", requireAdmin, async (request, response) => {
+  const provider = normalizeMusicProvider(request.params.provider, "");
+  const key = String(request.body?.key ?? "").trim();
+  if (!['netease', 'qq'].includes(provider) || !key) {
+    response.status(400).json({ message: "音乐源或二维码 key 无效" });
+    return;
+  }
+  try {
+    let status;
+    if (provider === "qq") {
+      status = await checkQQLoginQr(key);
+    } else {
+      const result = await callNeteaseApi("login_qr_check", { key }, { useStoredCookie: false });
+      const code = Number(result.body?.code ?? 0);
+      const mapped = {
+        800: { status: 0, message: "网易云音乐二维码已过期" },
+        801: { status: 1, message: "等待使用网易云音乐 App 扫码" },
+        802: { status: 2, message: "已扫码，等待手机确认" },
+        803: { status: 4, message: "网易云音乐登录成功，Cookie 已自动填入并保存" },
+      };
+      status = {
+        ...(mapped[code] ?? { status: 1, message: result.body?.message || `网易云登录状态 ${code}` }),
+        cookie: result.body?.cookie || result.cookie,
+      };
+    }
+    if (status.status === 4 && status.cookie) {
+      const saved = saveMusicProviderCookie(provider, status.cookie);
+      response.json({
+        ...status,
+        config: saved.config,
+        savedAt: saved.savedAt,
+      });
+      return;
+    }
+    response.json(status);
+  } catch (error) {
+    response.status(502).json({
+      message: `${MUSIC_PROVIDER_LABELS[provider]}扫码状态检查失败`,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
 app.post("/api/plugins/kugou/search", requireAdmin, async (request, response) => {
   const config = readConfig();
   const keywords = String(request.body?.keywords ?? config.plugins.kugouMusic.searchKeywords ?? "").trim();
@@ -4614,11 +6187,78 @@ app.post("/api/plugins/kugou/search", requireAdmin, async (request, response) =>
   }
 });
 
+app.get("/api/plugins/music/status", requireAdmin, (request, response) => {
+  const config = readConfig();
+  const sources = [
+    { id: "kugou", config: config.plugins.kugouMusic, load: loadKugouApi },
+    { id: "netease", config: config.plugins.neteaseMusic, load: loadNeteaseApi },
+    { id: "qq", config: config.plugins.qqMusic, load: loadQQMusicApi },
+  ].map((source) => {
+    try {
+      source.load();
+      return {
+        id: source.id,
+        name: MUSIC_PROVIDER_LABELS[source.id],
+        enabled: source.id === "kugou" ? source.config?.apiEnabled !== false : source.config?.enabled !== false,
+        installed: true,
+        authenticated: Boolean(String(source.config?.cookie ?? "").trim()),
+        message: (source.id === "kugou" ? source.config?.apiEnabled === false : source.config?.enabled === false) ? "已停用" : "本地 API 已加载",
+      };
+    } catch (error) {
+      return {
+        id: source.id,
+        name: MUSIC_PROVIDER_LABELS[source.id],
+        enabled: source.id === "kugou" ? source.config?.apiEnabled !== false : source.config?.enabled !== false,
+        installed: false,
+        authenticated: false,
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+  });
+  response.json({
+    provider: normalizeMusicProvider(config.plugins.kugouMusic.provider),
+    sources,
+    message: `${sources.filter((source) => source.installed && source.enabled).length} 个音乐 API 可用`,
+  });
+});
+
+app.post("/api/plugins/music/search", requireAdmin, async (request, response) => {
+  const config = readConfig();
+  const keywords = String(request.body?.keywords ?? config.plugins.kugouMusic.searchKeywords ?? "").trim();
+  const provider = normalizeMusicProvider(request.body?.provider ?? config.plugins.kugouMusic.provider);
+  const limit = Math.max(1, Math.min(100, Number(request.body?.limit ?? 20)));
+  if (!keywords) {
+    response.status(400).json({ message: "请输入歌曲或歌手关键词" });
+    return;
+  }
+  try {
+    const result = await searchMusicSources(config, provider, keywords, limit);
+    if (!result.songs.length && result.errors.length) {
+      throw new Error(result.errors.join("；"));
+    }
+    response.json({
+      errors: result.errors,
+      provider,
+      providers: result.providers,
+      songs: result.songs,
+      message: result.songs.length
+        ? `已从 ${[...new Set(result.songs.map((song) => MUSIC_PROVIDER_LABELS[song.source]))].filter(Boolean).join("、")} 找到 ${result.songs.length} 首歌曲`
+        : "音乐搜索未返回歌曲",
+    });
+  } catch (error) {
+    response.status(502).json({
+      message: "多音乐源搜索失败",
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
 app.post("/api/plugins/kugou/ai-hot-songs", requireAdmin, async (request, response) => {
   const config = readConfig();
+  const provider = normalizeMusicProvider(request.body?.provider ?? config.plugins.kugouMusic.provider);
   const requestedLimit = Number(request.body?.limit ?? AI_HOT_SONG_TARGET);
   const targetCount = Number.isFinite(requestedLimit)
-    ? Math.max(1, Math.min(AI_HOT_SONG_TARGET, requestedLimit))
+    ? Math.max(1, Math.min(AI_HOT_SONG_MAX, requestedLimit))
     : AI_HOT_SONG_TARGET;
   const prompt = String(request.body?.prompt ?? DEFAULT_AI_HOT_SONG_PROMPT).trim() || DEFAULT_AI_HOT_SONG_PROMPT;
   if (!config.plugins.kugouMusic.enabled) {
@@ -4630,7 +6270,7 @@ app.post("/api/plugins/kugou/ai-hot-songs", requireAdmin, async (request, respon
     const candidates = await generateAiHotSongCandidates(config.llm, targetCount, prompt);
     const shouldResolvePlayable = request.body?.resolve === true;
     const songs = shouldResolvePlayable
-      ? await resolveAiGeneratedHotSongs(config, candidates, targetCount)
+      ? await resolveAiGeneratedHotSongs(config, candidates, targetCount, provider)
       : candidates.map((song) => ({
           artist: song.artist || "音乐人",
           duration: 240,
@@ -4641,6 +6281,7 @@ app.post("/api/plugins/kugou/ai-hot-songs", requireAdmin, async (request, respon
     }
     response.json({
       candidates,
+      provider,
       prompt,
       songs,
       message: shouldResolvePlayable
@@ -4655,7 +6296,7 @@ app.post("/api/plugins/kugou/ai-hot-songs", requireAdmin, async (request, respon
   }
 });
 
-app.post("/api/plugins/kugou/generate", requireAdmin, async (request, response) => {
+async function handleMusicProgramGenerate(request, response) {
   const config = readConfig();
   try {
     const { program, ttsErrors } = await buildKugouProgram(config, {
@@ -4666,6 +6307,7 @@ app.post("/api/plugins/kugou/generate", requireAdmin, async (request, response) 
       scheduledAt: request.body?.scheduledAt,
       songs: request.body?.songs,
       title: request.body?.title,
+      voicePrompt: request.body?.voicePrompt,
     });
     response.json({
       program,
@@ -4677,7 +6319,10 @@ app.post("/api/plugins/kugou/generate", requireAdmin, async (request, response) 
       error: error instanceof Error ? error.message : String(error),
     });
   }
-});
+}
+
+app.post("/api/plugins/music/generate", requireAdmin, handleMusicProgramGenerate);
+app.post("/api/plugins/kugou/generate", requireAdmin, handleMusicProgramGenerate);
 
 app.post("/api/plugins/daily-briefing/generate", requireAdmin, async (request, response) => {
   const config = readConfig();
@@ -4712,9 +6357,13 @@ app.post("/api/plugins/daily-briefing/generate", requireAdmin, async (request, r
     }
 
     const briefing = parseDailyBriefingPayload(payload, Number(plugin.maxItems ?? 12));
-    const segments = await editDailyBriefingWithLlm(config.llm, briefing, host, { publishDate, scheduledAt });
+    const segments = applyVoiceStylePrompt(
+      await editDailyBriefingWithLlm(config.llm, briefing, host, { publishDate, scheduledAt }),
+      request.body?.voicePrompt,
+      config.tts.defaultStylePrompt,
+    );
     const script = segments.map((segment) => segment.text).join("\n\n");
-    const title = `每日早报 · ${briefing.date}`;
+    const title = `${String(request.body?.title ?? plugin.name ?? "每日早报").trim() || "每日早报"} · ${briefing.date}`;
 
     insertProgram({
       id,
@@ -4815,9 +6464,13 @@ app.post("/api/plugins/hot-topics/generate", requireAdmin, async (request, respo
     }
 
     const hotTopics = parseHotTopicsPayload(payload, Number(plugin.maxItems ?? 10));
-    const segments = await editHotTopicsWithLlm(config.llm, hotTopics, host, { publishDate, scheduledAt });
+    const segments = applyVoiceStylePrompt(
+      await editHotTopicsWithLlm(config.llm, hotTopics, host, { publishDate, scheduledAt }),
+      request.body?.voicePrompt,
+      config.tts.defaultStylePrompt,
+    );
     const script = segments.map((segment) => segment.text).join("\n\n");
-    const title = `${plugin.name || "今日热榜"} · ${hotTopics.name}`;
+    const title = `${String(request.body?.title ?? plugin.name ?? "今日热榜").trim() || "今日热榜"} · ${hotTopics.name}`;
 
     insertProgram({
       id,
@@ -4879,12 +6532,264 @@ app.post("/api/plugins/hot-topics/generate", requireAdmin, async (request, respo
   }
 });
 
+app.post("/api/media-programs/probe", requireAdmin, async (request, response) => {
+  try {
+    const probe = await probeRemoteMedia(request.body?.mediaUrl, { siteCookie: request.body?.siteCookie });
+    response.json({
+      probe: publicMediaProbe(probe),
+      message: `${probe.resolver === "direct" ? "已检测到" : `已通过 ${probe.resolver.startsWith("yt-dlp:") ? "yt-dlp" : "Bilibili 页面解析"}找到`} ${probe.codec} 音轨${probe.duration ? `，时长约 ${Math.round(probe.duration / 60)} 分钟` : ""}`,
+    });
+  } catch (error) {
+    response.status(400).json({
+      message: "媒体链接检测失败",
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
+async function generateMediaProgramRecord(input, options = {}) {
+  const config = readConfig();
+  const probe = await probeRemoteMedia(input?.mediaUrl, { siteCookie: input?.siteCookie });
+  const title = String(input?.title ?? "").trim() || String(probe.title ?? "").trim() || "网络媒体节目";
+  const creator = String(input?.creator ?? "").trim() || String(probe.creator ?? "").trim();
+  const introMode = ["ai", "direct"].includes(String(input?.introMode)) ? String(input.introMode) : "none";
+  const requestedDuration = clampNumber(input?.durationMinutes, 0.5, 360, 30) * 60;
+  const duration = Math.max(1, Math.round(probe.duration > 0 ? Math.min(probe.duration, requestedDuration) : requestedDuration));
+  const localCopy = probe.resolver !== "direct" || input?.localCopy !== false;
+  const selectedHosts = normalizeHosts(input?.hosts ?? input?.host);
+  const selectedHost = selectedHosts[0] ?? hostProfiles[0];
+  const playbackSpeed = normalizePlaybackSpeed(input?.playbackSpeed ?? config.tts.speed);
+  const publishDate = normalizePublishDate(input?.publishDate);
+  const scheduledAt = normalizeScheduledAt(input?.scheduledAt);
+  const categoryId = String(input?.categoryId ?? "").trim() || defaultCategoryIdForName("音乐专题");
+  const id = String(options.id ?? "").trim() || randomUUID();
+  const createdAt = options.createdAt ?? nowIso();
+
+  let script = "";
+  if (introMode === "ai") {
+    script = await generateMediaIntroduction(config.llm, {
+      creator,
+      prompt: String(input?.introPrompt ?? "").trim(),
+      title,
+    });
+  } else if (introMode === "direct") {
+    script = String(input?.introText ?? "").trim();
+    if (!script) {
+      throw new Error("原文介绍模式需要填写介绍词");
+    }
+  }
+
+  const mediaAudio = localCopy
+    ? await storeRemoteMediaAudio(probe, id, duration)
+    : { audioPath: null, audioUrl: probe.mediaUrl };
+  const playlist = [];
+  const segments = script ? applyVoiceStylePrompt([{
+    hostId: selectedHost.id,
+    hostName: selectedHost.name,
+    style: String(input?.voicePrompt ?? config.tts.defaultStylePrompt ?? selectedHost.tone).trim(),
+    text: script,
+  }], input?.voicePrompt, config.tts.defaultStylePrompt) : [];
+  let ttsError = "";
+  if (script) {
+    try {
+      const narration = await synthesizeSpeech(
+        { ...config.tts, speed: playbackSpeed },
+        script,
+        `${id}-intro`,
+        segments,
+      );
+      playlist.push({
+        type: "talk",
+        title: `${selectedHost.name}介绍`,
+        host: selectedHost.name,
+        text: script,
+        audioUrl: narration.audioUrl,
+        audioPath: narration.audioPath,
+        duration: talkedSegmentDuration(narration, segments[0]),
+      });
+    } catch (error) {
+      ttsError = error instanceof Error ? error.message : String(error);
+    }
+  }
+  playlist.push({
+    type: "song",
+    title,
+    artist: creator || "网络媒体",
+    audioUrl: mediaAudio.audioUrl,
+    audioPath: mediaAudio.audioPath,
+    duration,
+    source: "remote-media",
+    sourceId: createHash("sha256").update(probe.originalUrl).digest("hex").slice(0, 24),
+    originalUrl: probe.originalUrl,
+  });
+  const firstAudio = playlist.find((item) => item.audioUrl);
+  const record = {
+    id,
+    title,
+    host: script ? selectedHost.name : (creator || "网络媒体"),
+    prompt: `网络媒体：${probe.originalUrl}${creator ? ` · 来源：${creator}` : ""}`,
+    script,
+    segmentsJson: JSON.stringify(segments),
+    playlistJson: JSON.stringify(playlist),
+    status: "ready",
+    audioUrl: firstAudio?.audioUrl ?? mediaAudio.audioUrl,
+    audioPath: firstAudio?.audioPath ?? mediaAudio.audioPath,
+    sortOrder: options.sortOrder ?? nextProgramSortOrder(),
+    scheduledAt,
+    sourceType: "media-link",
+    pluginId: "remote-media",
+    categoryId,
+    playbackSpeed,
+    publishDate,
+    publishedAt: publishDate ? createdAt : null,
+    llmModel: introMode === "ai" ? config.llm.model : introMode === "direct" ? "原文介绍" : null,
+    ttsModel: script ? config.tts.model : null,
+    errorMessage: ttsError ? `介绍词已保存，但配音失败：${ttsError}` : null,
+    createdAt,
+    updatedAt: nowIso(),
+  };
+  if (options.updateExisting) {
+    updateProgram(id, record);
+  } else {
+    insertProgram(record);
+  }
+  const program = readProgramById(id);
+  archiveProgram(program);
+  return {
+    probe: publicMediaProbe(probe),
+    program,
+    message: ttsError
+      ? `媒体节目已生成，介绍词配音失败，播放时将直接进入媒体内容：${ttsError}`
+      : `媒体节目《${title}》已生成${localCopy ? "，音轨已保存到本地" : "，将使用原始链接播放"}`,
+  };
+}
+
+const mediaProgramBackgroundJobs = new Set();
+
+function createPendingMediaProgram(input) {
+  const mediaUrl = String(input?.mediaUrl ?? "").trim();
+  let parsed;
+  try {
+    parsed = new URL(mediaUrl);
+  } catch {
+    throw new Error("请输入有效的 HTTP 或 HTTPS 媒体页面地址");
+  }
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    throw new Error("媒体地址只支持 HTTP 或 HTTPS");
+  }
+  const introMode = ["ai", "direct"].includes(String(input?.introMode)) ? String(input.introMode) : "none";
+  if (introMode === "direct" && !String(input?.introText ?? "").trim()) {
+    throw new Error("原文介绍模式需要填写介绍词");
+  }
+  const config = readConfig();
+  const selectedHost = normalizeHosts(input?.hosts ?? input?.host)[0] ?? hostProfiles[0];
+  const publishDate = normalizePublishDate(input?.publishDate);
+  const createdAt = nowIso();
+  const id = randomUUID();
+  const title = String(input?.title ?? "").trim() || "网络媒体节目（后台生成中）";
+  const sortOrder = nextProgramSortOrder();
+  insertProgram({
+    id,
+    title,
+    host: selectedHost.name,
+    prompt: `网络媒体后台任务：${mediaUrl}`,
+    script: introMode === "direct" ? String(input.introText).trim() : "",
+    segmentsJson: "[]",
+    playlistJson: "[]",
+    status: "generating",
+    audioUrl: null,
+    audioPath: null,
+    sortOrder,
+    scheduledAt: normalizeScheduledAt(input?.scheduledAt),
+    sourceType: "media-link",
+    pluginId: "remote-media",
+    categoryId: String(input?.categoryId ?? "").trim() || defaultCategoryIdForName("音乐专题"),
+    playbackSpeed: normalizePlaybackSpeed(input?.playbackSpeed ?? config.tts.speed),
+    publishDate,
+    publishedAt: publishDate ? createdAt : null,
+    llmModel: introMode === "ai" ? config.llm.model : introMode === "direct" ? "原文介绍" : null,
+    ttsModel: introMode === "none" ? null : config.tts.model,
+    errorMessage: "后台正在解析媒体页面并提取音轨",
+    createdAt,
+    updatedAt: createdAt,
+  });
+  return { createdAt, id, sortOrder };
+}
+
+function runMediaProgramInBackground(input, pending) {
+  mediaProgramBackgroundJobs.add(pending.id);
+  void generateMediaProgramRecord(input, {
+    createdAt: pending.createdAt,
+    id: pending.id,
+    sortOrder: pending.sortOrder,
+    updateExisting: true,
+  }).catch((error) => {
+    updateProgram(pending.id, {
+      status: "failed",
+      errorMessage: error instanceof Error ? error.message : String(error),
+    });
+  }).finally(() => {
+    mediaProgramBackgroundJobs.delete(pending.id);
+  });
+}
+
+app.post("/api/media-programs/generate", requireAdmin, async (request, response) => {
+  try {
+    const result = await generateMediaProgramRecord(request.body);
+    response.json({ ...result, programs: readProgramList() });
+  } catch (error) {
+    response.status(502).json({
+      message: "网络媒体节目生成失败",
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
+app.post("/api/media-programs/generate-background", requireAdmin, (request, response) => {
+  try {
+    const pending = createPendingMediaProgram(request.body);
+    const program = readProgramById(pending.id);
+    runMediaProgramInBackground({ ...request.body, siteCookie: String(request.body?.siteCookie ?? "") }, pending);
+    response.status(202).json({
+      jobId: pending.id,
+      program,
+      programs: readProgramList(),
+      message: `节目《${program.title}》已保存，正在后台解析和生成，可离开本页面`,
+    });
+  } catch (error) {
+    response.status(400).json({
+      message: "网络媒体后台任务保存失败",
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
+app.get("/api/media-programs/jobs/:id", requireAdmin, (request, response) => {
+  const program = readProgramById(request.params.id);
+  if (!program || program.pluginId !== "remote-media") {
+    response.status(404).json({ message: "网络媒体后台任务不存在" });
+    return;
+  }
+  response.json({
+    active: mediaProgramBackgroundJobs.has(program.id),
+    program,
+    message: program.status === "ready"
+      ? "网络媒体节目后台生成完成"
+      : program.status === "failed"
+        ? `网络媒体节目后台生成失败：${program.errorMessage || "未知错误"}`
+        : "网络媒体节目正在后台生成",
+  });
+});
+
 app.post("/api/programs/generate", requireAdmin, async (request, response) => {
   const config = readConfig();
-  const prompt =
-    String(request.body?.prompt ?? "").trim() ||
-    config.suno.defaultPrompt ||
-    "星夜、城市、柔和人声、治愈氛围";
+  const contentMode = request.body?.contentMode === "direct" ? "direct" : "ai";
+  const requestedContent = String(request.body?.prompt ?? "").trim();
+  if (contentMode === "direct" && !requestedContent) {
+    response.status(400).json({ message: "原文直出配音需要填写完整原文" });
+    return;
+  }
+  const prompt = requestedContent || config.suno.defaultPrompt || "星夜、城市、柔和人声、治愈氛围";
   const title = String(request.body?.title ?? "").trim() || `星声节目 ${new Date().toLocaleString("zh-CN", { hour12: false })}`;
   const selectedHosts = normalizeHosts(request.body?.hosts ?? request.body?.host);
   const categoryId = String(request.body?.categoryId ?? "").trim() || defaultCategoryIdForName("常规节目");
@@ -4896,9 +6801,11 @@ app.post("/api/programs/generate", requireAdmin, async (request, response) => {
   const createdAt = nowIso();
 
   try {
-    const generated = await generateScript(config.llm, { hosts: selectedHosts, prompt, publishDate, scheduledAt, title });
-    const script = generated.script;
-    const segments = generated.segments;
+    const generated = contentMode === "direct"
+      ? directScriptPayload(prompt, selectedHosts)
+      : await generateScript(config.llm, { hosts: selectedHosts, prompt, publishDate, scheduledAt, title });
+    const segments = applyVoiceStylePrompt(generated.segments, request.body?.voicePrompt, config.tts.defaultStylePrompt);
+    const script = segments.map((segment) => segment.text).join("\n\n") || generated.script;
     insertProgram({
       id,
       title,
@@ -4917,7 +6824,7 @@ app.post("/api/programs/generate", requireAdmin, async (request, response) => {
       playbackSpeed,
       publishDate,
       publishedAt: publishDate ? createdAt : null,
-      llmModel: config.llm.model,
+      llmModel: contentMode === "direct" ? "原文直出" : config.llm.model,
       ttsModel: config.tts.model,
       errorMessage: null,
       createdAt,
@@ -4937,7 +6844,10 @@ app.post("/api/programs/generate", requireAdmin, async (request, response) => {
       });
       archiveProgram(program);
 
-      response.json({ program, message: "节目文案已入库，语音已生成" });
+      response.json({
+        program,
+        message: contentMode === "direct" ? "原文已入库，配音已生成" : "节目文案已入库，语音已生成",
+      });
     } catch (error) {
       const program = updateProgram(id, {
         status: "script_saved",
@@ -4947,13 +6857,235 @@ app.post("/api/programs/generate", requireAdmin, async (request, response) => {
 
       response.status(502).json({
         program,
-        message: "文案已入库，但语音合成失败",
+        message: contentMode === "direct" ? "原文已入库，但语音合成失败" : "文案已入库，但语音合成失败",
         error: error instanceof Error ? error.message : String(error),
       });
     }
   } catch (error) {
     response.status(502).json({
-      message: "节目文案生成失败，未写入节目记录",
+      message: contentMode === "direct" ? "原文处理失败，未写入节目记录" : "节目文案生成失败，未写入节目记录",
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
+app.post("/api/suno/plan", requireAdmin, async (request, response) => {
+  try {
+    const config = readConfig();
+    const plan = await generateAiMusicPlan(config, request.body ?? {});
+    response.json({ plan, message: "大模型已生成并填入 Suno 歌曲方案" });
+  } catch (error) {
+    response.status(502).json({
+      message: "AI 音乐方案生成失败",
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
+app.post("/api/suno/generate", requireAdmin, async (request, response) => {
+  const config = readConfig();
+  const missing = validateSunoConfig(config.suno);
+  if (missing.length) {
+    response.status(400).json({ message: `Suno 配置缺少：${missing.join("、")}` });
+    return;
+  }
+  if (!config.suno.enabled) {
+    response.status(400).json({ message: "Suno 本地 API 当前未启用" });
+    return;
+  }
+
+  try {
+    const mode = request.body?.mode === "manual" ? "manual" : "auto";
+    const quantity = mode === "auto" ? Math.round(clampNumber(request.body?.quantity, 1, 5, 1)) : 1;
+    const requestedGender = normalizeVoiceGender(request.body?.voiceGender);
+    const plans = [];
+    if (mode === "auto") {
+      for (let index = 0; index < quantity; index += 1) {
+        plans.push(await generateAiMusicPlan(config, {
+          ...request.body,
+          brief: "",
+          instrumental: false,
+          style: "",
+          title: "",
+          variationNonce: `${Date.now()}-${index + 1}-${randomUUID()}`,
+          voiceGender: requestedGender,
+        }));
+      }
+    } else {
+      plans.push({
+          title: String(request.body?.title ?? "AI原创音乐").trim() || "AI原创音乐",
+          style: String(request.body?.style ?? config.suno.style ?? "").trim(),
+          lyrics: String(request.body?.lyrics ?? "").trim(),
+          negativeTags: "",
+          voiceGender: requestedGender === "random" ? (Math.random() < 0.5 ? "female" : "male") : requestedGender,
+      });
+    }
+    for (const plan of plans) {
+      if (!plan.style) {
+        throw new Error("请填写 Suno Styles");
+      }
+      if (!plan.lyrics) {
+        throw new Error("请填写 Suno Lyrics");
+      }
+      plan.style = styleWithVoiceGender(plan.style, plan.voiceGender);
+    }
+
+    const resolvedModel = await resolveSunoModel(config.suno);
+    const submittedGroups = [];
+    for (const plan of plans) {
+      const clips = await callSunoApi(config.suno, "/api/custom_generate", {
+        method: "POST",
+        body: JSON.stringify({
+          prompt: plan.lyrics,
+          tags: plan.style,
+          title: plan.title,
+          make_instrumental: false,
+          model: resolvedModel,
+          wait_audio: false,
+        }),
+      });
+      submittedGroups.push({ clips: Array.isArray(clips) ? clips : [], plan });
+    }
+    const completed = await waitForSunoAudio(config.suno, submittedGroups.flatMap((group) => group.clips), 240_000);
+    const readyById = new Map(completed.ready.map((clip) => [String(clip.id), clip]));
+    const completedGroups = submittedGroups.map((group, slotIndex) => ({
+      plan: group.plan,
+      slotIndex,
+      ready: group.clips.map((clip) => readyById.get(String(clip.id))).filter(Boolean),
+    })).filter((group) => group.ready.length);
+    if (!completedGroups.length) {
+      throw new Error("Suno 没有返回可播放歌曲");
+    }
+
+    const id = randomUUID();
+    const createdAt = nowIso();
+    const selectedSongs = [];
+    for (const group of completedGroups) {
+      const selected = group.ready[0];
+      const stored = await storeSunoAudio(selected, `${id}-${group.slotIndex + 1}`);
+      selectedSongs.push({ ...group, selected, stored });
+    }
+    const publishDate = normalizePublishDate(request.body?.publishDate);
+    const scheduledAt = normalizeScheduledAt(request.body?.scheduledAt);
+    const playlist = selectedSongs.map(({ plan, selected, stored }) => ({
+      type: "song",
+      title: String(plan.title || selected.title || "AI原创音乐").trim(),
+      artist: "Suno AI",
+      audioUrl: stored.audioUrl,
+      audioPath: stored.audioPath,
+      coverUrl: selected.image_url || "",
+      duration: Math.max(1, Number(selected.duration ?? 0) || 240),
+      lyrics: plan.lyrics,
+      source: "suno",
+      sourceId: selected.id,
+    }));
+    const title = playlist.length === 1 ? playlist[0].title : `AI原创音乐 · ${playlist.length}首`;
+    const script = selectedSongs.map(({ plan }, index) => `《${plan.title}》\n${plan.lyrics}${index < selectedSongs.length - 1 ? "\n\n" : ""}`).join("");
+    insertProgram({
+      id,
+      title,
+      host: "Suno AI",
+      prompt: mode === "auto" ? `全自动随机创作 ${playlist.length} 首` : String(request.body?.brief ?? "手动歌词与 Styles").trim(),
+      script,
+      segmentsJson: "[]",
+      playlistJson: JSON.stringify(playlist),
+      status: "ready",
+      audioUrl: playlist[0].audioUrl,
+      audioPath: playlist[0].audioPath,
+      sortOrder: nextProgramSortOrder(),
+      scheduledAt,
+      sourceType: "suno",
+      pluginId: "suno-ai",
+      categoryId: String(request.body?.categoryId ?? "").trim() || defaultCategoryIdForName("音乐专题"),
+      playbackSpeed: 1,
+      publishDate,
+      publishedAt: publishDate ? createdAt : null,
+      llmModel: mode === "auto" ? config.llm.model : "手动歌词与提示词",
+      ttsModel: resolvedModel,
+      errorMessage: null,
+      createdAt,
+      updatedAt: createdAt,
+    });
+    const program = readProgramById(id);
+    archiveProgram(program);
+    response.json({
+      program,
+      programs: readProgramList(),
+      plan: plans[0],
+      plans,
+      alternatives: completedGroups.flatMap((group) => group.ready.map((clip, variantIndex) => ({
+        id: clip.id,
+        slotIndex: group.slotIndex,
+        variantIndex,
+        selected: variantIndex === 0,
+        title: group.plan.title || clip.title,
+        audioUrl: clip.audio_url,
+        imageUrl: clip.image_url,
+        status: clip.status,
+      }))),
+      message: `${playlist.length} 首 AI 音乐已生成；每组已默认选用第一版，可试听后更换`,
+    });
+  } catch (error) {
+    response.status(502).json({
+      message: "Suno AI 音乐生成失败",
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
+app.post("/api/suno/select", requireAdmin, async (request, response) => {
+  try {
+    const programId = String(request.body?.programId ?? "").trim();
+    const clipId = String(request.body?.clipId ?? "").trim();
+    const slotIndex = Math.max(0, Math.floor(Number(request.body?.slotIndex ?? 0)));
+    const program = readProgramById(programId);
+    if (!program || program.sourceType !== "suno") {
+      response.status(404).json({ message: "没有找到对应的 Suno AI 音乐节目" });
+      return;
+    }
+    if (!clipId) {
+      response.status(400).json({ message: "缺少 Suno 歌曲版本 ID" });
+      return;
+    }
+    const config = readConfig();
+    const clips = await callSunoApi(config.suno, `/api/get?ids=${encodeURIComponent(clipId)}`);
+    const clip = (Array.isArray(clips) ? clips : []).find(
+      (item) => String(item?.id ?? "") === clipId && item?.audio_url,
+    );
+    if (!clip) {
+      throw new Error("所选 Suno 版本尚未生成完成或已失效");
+    }
+    const playlist = [...(program.playlist ?? [])];
+    const songIndexes = playlist.map((item, index) => item?.type === "song" ? index : -1).filter((index) => index >= 0);
+    const playlistIndex = songIndexes[slotIndex];
+    if (!Number.isInteger(playlistIndex)) {
+      response.status(400).json({ message: "歌曲位置无效" });
+      return;
+    }
+    const stored = await storeSunoAudio(clip, `${program.id}-${slotIndex + 1}-${clip.id}`);
+    const currentSong = playlist[playlistIndex];
+    playlist[playlistIndex] = {
+      ...currentSong,
+      audioUrl: stored.audioUrl,
+      audioPath: stored.audioPath,
+      coverUrl: clip.image_url || currentSong.coverUrl || "",
+      duration: Math.max(1, Number(clip.duration ?? 0) || Number(currentSong.duration ?? 0) || 240),
+      source: "suno",
+      sourceId: clip.id,
+    };
+    const updated = updateProgram(program.id, {
+      playlistJson: JSON.stringify(playlist),
+      ...(slotIndex === 0 ? { audioUrl: stored.audioUrl, audioPath: stored.audioPath } : {}),
+    });
+    archiveProgram(updated);
+    response.json({
+      program: updated,
+      programs: readProgramList(),
+      message: `已为第 ${slotIndex + 1} 首歌曲选用当前版本`,
+    });
+  } catch (error) {
+    response.status(502).json({
+      message: "切换 Suno 歌曲版本失败",
       error: error instanceof Error ? error.message : String(error),
     });
   }
@@ -4987,8 +7119,26 @@ function attachTransition(program, node) {
   }
   const transition = node.transitionBefore ? buildTransitionPlaylistItem(node.transitionBefore) : null;
   const basePlaylist = Array.isArray(program.playlist) ? [...program.playlist] : [];
-  const playlist = transition ? [transition, ...basePlaylist] : basePlaylist;
+  const hasPrimaryContent = basePlaylist.some(
+    (item) => item?.audioUrl && item?.type !== "background" && item?.role !== "background" && item?.type !== "transition" && item?.role !== "transition",
+  );
+  const mainProgramItem = !hasPrimaryContent && program.audioUrl
+    ? {
+        type: "talk",
+        title: program.title,
+        host: program.host,
+        text: program.script,
+        audioUrl: program.audioUrl,
+        audioPath: program.audioPath,
+      }
+    : null;
+  const playlist = transition
+    ? [transition, ...basePlaylist, ...(mainProgramItem ? [mainProgramItem] : [])]
+    : basePlaylist;
   const updated = updateProgram(program.id, { playlistJson: JSON.stringify(playlist) });
+  if (updated) {
+    archiveProgram(updated);
+  }
   return updated ?? program;
 }
 
@@ -5052,42 +7202,49 @@ async function generateProgramFromNode(config, node, ctx) {
         skipped: true,
       };
     }
-    // kugou-random：调用酷狗自动取歌，构建音乐联播节目。
+    // kugou-random：兼容旧流程节点名称，实际会按当前多音乐源设置自动取歌。
     if (node.kind === "kugou-random") {
       const basePlugin = config.plugins.kugouMusic;
       if (!basePlugin.enabled) {
-        return { program: null, message: "酷狗音乐插件未启用，空闲时段已跳过", skipped: true };
+        return { program: null, message: "音乐节目功能未启用，空闲时段已跳过", skipped: true };
       }
       const aiSongMessage = String(node.aiSongMessage ?? "").trim();
       const keywords = String(node.keywords ?? "").trim();
-      const songs = Array.isArray(node.songs)
-        ? node.songs.map(normalizeKugouSong).filter((song) => song.title || song.hash || song.albumAudioId || song.audioUrl)
-        : [];
+      const musicPlaylistId = String(node.musicPlaylistId ?? "").trim() || null;
+      const playbackMode = normalizeMusicPlaybackMode(node.playbackMode);
+      const songs = normalizeMusicPlaylistSongs(node.songs);
+      const hasPresetSongs = songs.length > 0;
       const fillerSongLimit = songs.length || FLOW_FILLER_INITIAL_SONGS;
       const pluginOverride = keywords
-        ? { maxSongs: fillerSongLimit, source: "search", searchKeywords: keywords, useAiScript: false }
-        : { maxSongs: fillerSongLimit, useAiScript: false };
+        ? { maxSongs: fillerSongLimit, provider: node.provider, source: "search", searchKeywords: keywords, useAiScript: false }
+        : { maxSongs: fillerSongLimit, provider: node.provider, useAiScript: false };
       try {
         const { program } = await buildKugouProgram(config, {
-          allowAiSongFallback: true,
+          allowAiSongFallback: !hasPresetSongs,
           publishDate,
           scheduledAt,
           playbackSpeed: 1,
+          playbackMode,
+          restartFromBeginning: Boolean(node.restartFromBeginning),
+          musicPlaylistId,
           songs,
           title: node.title || (keywords ? `音乐连播 · ${keywords}` : "音乐连播"),
           prompt: "流程编排 · 音乐连播",
           sourceType: "flow-filler",
           pluginId: "kugou-music",
-          refreshManualPool: songs.length >= fillerSongLimit,
-          songSeed: publishDate ? `flow-filler:${publishDate}:${keywords || basePlugin.searchKeywords || "auto"}` : "",
-          topUpManualSongs: true,
+          refreshManualPool: false,
+          songSeed: musicPlaylistId
+            ? `${publishDate || localDateString()}:${musicPlaylistId}`
+            : (publishDate ? `flow-filler:${publishDate}:${keywords || basePlugin.searchKeywords || "auto"}` : ""),
+          topUpManualSongs: !hasPresetSongs,
           plugin: pluginOverride,
         });
         return {
           program: attachTransition(program, node),
           message: [
             aiSongMessage,
-            `已生成音乐连播：${songs.length ? `${songs.length} 首歌曲` : node.title || keywords || "默认歌单"}`,
+            `已生成音乐连播：${songs.length ? `${songs.length} 首歌曲` : node.title || keywords || "默认歌单"}` +
+              (musicPlaylistId ? `（${playbackMode === "shuffle" ? "随机播放" : "顺序播放"}）` : ""),
           ].filter(Boolean).join("；"),
         };
       } catch (error) {
@@ -5273,7 +7430,7 @@ async function generateProgramFromNode(config, node, ctx) {
       const segments = await editDailyBriefingWithLlm(config.llm, briefing, host, { publishDate, scheduledAt });
       const script = segments.map((segment) => segment.text).join("\n\n");
       const title = node.title || template.title || `每日早报 · ${briefing.date || dateBase}`;
-      insertProgram({ id, title, host: host.name, prompt: "ALAPI 每日早报插件采集", script, segmentsJson: JSON.stringify(segments), status: "script_saved", audioUrl: null, audioPath: null, sortOrder: ctx.nextSort(), scheduledAt, sourceType: "plugin", pluginId: "daily-briefing", categoryId: template.categoryId || defaultCategoryIdForName("常规节目"), playbackSpeed, publishDate, publishedAt: publishDate ? createdAt : null, llmModel: "ALAPI", ttsModel: config.tts.model, errorMessage: null, createdAt, updatedAt: createdAt });
+      insertProgram({ id, title, host: host.name, prompt: "ALAPI 每日早报插件采集", script, segmentsJson: JSON.stringify(segments), status: "script_saved", audioUrl: null, audioPath: null, sortOrder: ctx.nextSort(), scheduledAt, sourceType: "plugin", pluginId: "daily-briefing", programPresetId: template.id, categoryId: template.categoryId || defaultCategoryIdForName("常规节目"), playbackSpeed, publishDate, publishedAt: publishDate ? createdAt : null, llmModel: "ALAPI", ttsModel: config.tts.model, errorMessage: null, createdAt, updatedAt: createdAt });
       archiveProgram(readProgramById(id));
       try {
         const audio = await synthesizeSpeech({ ...config.tts, speed: playbackSpeed }, script, id, segments);
@@ -5301,7 +7458,7 @@ async function generateProgramFromNode(config, node, ctx) {
       const segments = await editHotTopicsWithLlm(config.llm, hotTopics, host, { publishDate, scheduledAt });
       const script = segments.map((segment) => segment.text).join("\n\n");
       const title = node.title || template.title || `${plugin.name || "今日热榜"} · ${hotTopics.name || dateBase}`;
-      insertProgram({ id, title, host: host.name, prompt: `ALAPI 今日热榜插件采集：${hotTopics.name}`, script, segmentsJson: JSON.stringify(segments), status: "script_saved", audioUrl: null, audioPath: null, sortOrder: ctx.nextSort(), scheduledAt, sourceType: "plugin", pluginId: "hot-topics", categoryId: template.categoryId || defaultCategoryIdForName("常规节目"), playbackSpeed, publishDate, publishedAt: publishDate ? createdAt : null, llmModel: "ALAPI", ttsModel: config.tts.model, errorMessage: null, createdAt, updatedAt: createdAt });
+      insertProgram({ id, title, host: host.name, prompt: `ALAPI 今日热榜插件采集：${hotTopics.name}`, script, segmentsJson: JSON.stringify(segments), status: "script_saved", audioUrl: null, audioPath: null, sortOrder: ctx.nextSort(), scheduledAt, sourceType: "plugin", pluginId: "hot-topics", programPresetId: template.id, categoryId: template.categoryId || defaultCategoryIdForName("常规节目"), playbackSpeed, publishDate, publishedAt: publishDate ? createdAt : null, llmModel: "ALAPI", ttsModel: config.tts.model, errorMessage: null, createdAt, updatedAt: createdAt });
       archiveProgram(readProgramById(id));
       try {
         const audio = await synthesizeSpeech({ ...config.tts, speed: playbackSpeed }, script, id, segments);
@@ -5321,6 +7478,7 @@ async function generateProgramFromNode(config, node, ctx) {
           categoryId: template.categoryId,
           hostId: template.hostId,
           plugin: template.kugou ?? undefined,
+          programPresetId: template.id,
           publishDate,
           scheduledAt,
           playbackSpeed: template.playbackSpeed ?? config.tts.speed,
@@ -5334,14 +7492,20 @@ async function generateProgramFromNode(config, node, ctx) {
     }
     // 默认：按自定义 AI 节目生成（复用模板的 prompt/host/category）。
     const selectedHosts = normalizeHosts(template.hostIds?.length ? template.hostIds : (template.hostId ? [template.hostId] : null));
-    const prompt = String(template.prompt ?? "").trim() || "星夜、城市、柔和人声、治愈氛围";
+    const requestedContent = String(template.prompt ?? "").trim();
+    if (template.contentMode === "direct" && !requestedContent) {
+      return { program: null, message: `预设「${template.name}」缺少直出配音原文，已跳过`, skipped: true };
+    }
+    const prompt = requestedContent || "星夜、城市、柔和人声、治愈氛围";
     const title = node.title || template.title || `星声节目 ${dateBase}`;
     const playbackSpeed = normalizePlaybackSpeed(template.playbackSpeed ?? config.tts.speed);
     const id = randomUUID();
     const createdAt = nowIso();
     try {
-      const generated = await generateScript(config.llm, { hosts: selectedHosts, prompt, publishDate, scheduledAt, title });
-      insertProgram({ id, title, host: selectedHosts.map((item) => item.name).join(" / "), prompt, script: generated.script, segmentsJson: JSON.stringify(generated.segments), status: "script_saved", audioUrl: null, audioPath: null, sortOrder: ctx.nextSort(), scheduledAt, sourceType: "flow-preset", pluginId: null, categoryId: template.categoryId || defaultCategoryIdForName("常规节目"), playbackSpeed, publishDate, publishedAt: publishDate ? createdAt : null, llmModel: config.llm.model, ttsModel: config.tts.model, errorMessage: null, createdAt, updatedAt: createdAt });
+      const generated = template.contentMode === "direct"
+        ? directScriptPayload(prompt, selectedHosts)
+        : await generateScript(config.llm, { hosts: selectedHosts, prompt, publishDate, scheduledAt, title });
+      insertProgram({ id, title, host: selectedHosts.map((item) => item.name).join(" / "), prompt, script: generated.script, segmentsJson: JSON.stringify(generated.segments), status: "script_saved", audioUrl: null, audioPath: null, sortOrder: ctx.nextSort(), scheduledAt, sourceType: "flow-preset", pluginId: null, programPresetId: template.id, categoryId: template.categoryId || defaultCategoryIdForName("常规节目"), playbackSpeed, publishDate, publishedAt: publishDate ? createdAt : null, llmModel: template.contentMode === "direct" ? "原文直出" : config.llm.model, ttsModel: config.tts.model, errorMessage: null, createdAt, updatedAt: createdAt });
       archiveProgram(readProgramById(id));
       try {
         const audio = await synthesizeSpeech({ ...config.tts, speed: playbackSpeed }, generated.script, id, generated.segments);
@@ -5405,12 +7569,21 @@ function rowToFlowPreset(row) {
   } catch {
     payload = { nodes: [] };
   }
+  const autoFillPlaylistId = String(payload.autoFillPlaylistId ?? "").trim() || null;
+  const musicPlaylist = autoFillPlaylistId ? readMusicPlaylistById(autoFillPlaylistId) : null;
+  const payloadSongs = normalizeMusicPlaylistSongs(payload.autoFillSongs);
   return {
     autoFillEnabled: payload.autoFillEnabled !== false,
     autoFillKeywords: String(payload.autoFillKeywords ?? "").trim(),
-    autoFillSongs: Array.isArray(payload.autoFillSongs)
-      ? payload.autoFillSongs.map(normalizeKugouSong).filter((song) => song.title || song.hash || song.albumAudioId || song.audioUrl)
-      : [],
+    autoFillProvider: normalizeMusicProvider(payload.autoFillProvider, "auto"),
+    autoFillRestartFromBeginning: Boolean(payload.autoFillRestartFromBeginning),
+    autoFillSongs: musicPlaylist ? musicPlaylist.songs : payloadSongs,
+    autoFillPlaybackMode: normalizeMusicPlaybackMode(
+      payload.autoFillPlaybackMode,
+      musicPlaylist?.playbackMode ?? "sequential",
+    ),
+    autoFillPlaylistId,
+    autoFillPlaylistName: musicPlaylist?.name ?? null,
     id: row.id,
     name: row.name,
     nodes: Array.isArray(payload.nodes) ? payload.nodes : [],
@@ -5425,7 +7598,7 @@ function rowToFlowPreset(row) {
 }
 
 function kugouSongKey(song) {
-  return String(song?.hash || song?.albumAudioId || `${song?.artist ?? ""}-${song?.title ?? ""}`)
+  return String(`${song?.source ?? "kugou"}:${song?.sourceId || song?.hash || song?.albumAudioId || `${song?.artist ?? ""}-${song?.title ?? ""}`}`)
     .trim()
     .toLowerCase();
 }
@@ -5446,6 +7619,34 @@ function seededShuffle(items, seed, keyFn = (item, index) => `${index}:${JSON.st
     }))
     .sort((a, b) => a.score - b.score)
     .map((entry) => entry.item);
+}
+
+function resolveAutoFillPlaylistState({
+  autoFillPlaybackMode,
+  autoFillPlaylistId,
+  autoFillSongs,
+} = {}) {
+  const playlistId = String(autoFillPlaylistId ?? "").trim() || null;
+  const playlist = playlistId ? readMusicPlaylistById(playlistId) : null;
+  return {
+    playlist,
+    playlistId,
+    playbackMode: normalizeMusicPlaybackMode(
+      autoFillPlaybackMode,
+      playlist?.playbackMode ?? "sequential",
+    ),
+    songs: playlist ? playlist.songs : normalizeMusicPlaylistSongs(autoFillSongs),
+  };
+}
+
+function orderMusicPlaylistSongs(songs, playbackMode, publishDate, playlistId) {
+  const normalized = normalizeMusicPlaylistSongs(songs);
+  if (normalizeMusicPlaybackMode(playbackMode) !== "shuffle") {
+    return normalized;
+  }
+  const dateSeed = normalizePublishDate(publishDate) || localDateString();
+  const playlistSeed = String(playlistId ?? "").trim() || "auto-fill";
+  return seededShuffle(normalized, `${dateSeed}:${playlistSeed}`, kugouSongKey);
 }
 
 function rotateBySeed(items, seed) {
@@ -5485,15 +7686,20 @@ function readFlowFillerProgramForDate(publishDate) {
   return rows.find(isFlowFillerProgram) ?? null;
 }
 
-async function resolveFlowFillerSongs(config, inputSongs, keywords, publishDate) {
-  const normalizedInput = Array.isArray(inputSongs)
-    ? inputSongs.map(normalizeKugouSong).filter((song) => song.title || song.hash || song.albumAudioId || song.audioUrl)
-    : [];
+async function resolveFlowFillerSongs(config, inputSongs, keywords, publishDate, options = {}) {
+  config = configForMusicProvider(config, options.provider);
+  const playlistId = String(options.playlistId ?? "").trim() || null;
+  const playbackMode = normalizeMusicPlaybackMode(options.playbackMode);
+  const normalizedInput = orderMusicPlaylistSongs(inputSongs, playbackMode, publishDate, playlistId);
+  if (playlistId && !normalizedInput.length) {
+    throw new Error("保存的自定义歌单为空，请先添加歌曲");
+  }
   const targetSongCount = normalizedInput.length
     ? Math.max(1, Math.min(KUGOU_MAX_PROGRAM_SONGS, normalizedInput.length))
     : FLOW_FILLER_INITIAL_SONGS;
   const basePlugin = {
     ...config.plugins.kugouMusic,
+    provider: normalizeMusicProvider(options.provider, config.plugins.kugouMusic.provider),
     maxSongs: targetSongCount,
     useAiScript: false,
   };
@@ -5512,19 +7718,19 @@ async function resolveFlowFillerSongs(config, inputSongs, keywords, publishDate)
     {
       refreshManualPool: false,
       seed,
-      topUpManual: true,
+      topUpManual: !normalizedInput.length,
     },
   );
 
   if (!playable.length) {
-    throw new Error("音乐连播清单中没有可播放歌曲，请重新搜索或检查酷狗登录态");
+    throw new Error("音乐连播清单中没有可播放歌曲，请重新搜索或检查所选音乐源登录态");
   }
 
   return playable;
 }
 
-async function buildFlowFillerPlaylist(config, songs, keywords, publishDate) {
-  const playableSongs = await resolveFlowFillerSongs(config, songs, keywords, publishDate);
+async function buildFlowFillerPlaylist(config, songs, keywords, publishDate, options = {}) {
+  const playableSongs = await resolveFlowFillerSongs(config, songs, keywords, publishDate, options);
   if (config.plugins.kugouMusic.cookie) {
     saveKugouCookie(config.plugins.kugouMusic.cookie);
   }
@@ -5544,9 +7750,11 @@ function kugouSongToPlaylistItem(song) {
     duration: song.duration,
     hash: song.hash,
     lyrics: song.lyrics,
+    mediaId: song.mediaId,
     albumId: song.albumId,
     albumAudioId: song.albumAudioId,
-    source: "kugou",
+    source: song.source || "kugou",
+    sourceId: song.sourceId,
   };
 }
 
@@ -5554,7 +7762,7 @@ function programPlaylistSongs(program) {
   return Array.isArray(program?.playlist)
     ? program.playlist
         .filter((item) => item?.type === "song" && item.audioUrl)
-        .map(normalizeKugouSong)
+        .map(normalizeMusicSong)
     : [];
 }
 
@@ -5567,6 +7775,15 @@ async function topUpFlowFillerProgram(programId, options = {}) {
   }
 
   const existingSongs = programPlaylistSongs(program);
+  if (program.musicPlaylistId) {
+    return {
+      addedSongs: [],
+      program,
+      skipped: true,
+      totalSongs: existingSongs.length,
+      message: `当前音乐连播由保存歌单托管（${program.playbackMode === "shuffle" ? "随机播放" : "顺序播放"}），不会追加 AI 歌曲`,
+    };
+  }
   const maxSongs = Math.max(FLOW_FILLER_INITIAL_SONGS, Math.min(FLOW_FILLER_TARGET_SONGS, Number(options.maxSongs ?? FLOW_FILLER_TARGET_SONGS)));
   const batchSize = Math.max(1, Math.min(FLOW_FILLER_TOP_UP_BATCH_SONGS, Number(options.batchSize ?? FLOW_FILLER_TOP_UP_BATCH_SONGS)));
   const remainingCapacity = Math.max(0, maxSongs - existingSongs.length);
@@ -5582,11 +7799,13 @@ async function topUpFlowFillerProgram(programId, options = {}) {
 
   const targetCount = Math.min(batchSize, remainingCapacity);
   const config = readConfig();
+  const existingProviders = [...new Set(existingSongs.map((song) => normalizeMusicProvider(song.source, "")).filter(Boolean))];
+  const provider = existingProviders.length === 1 ? existingProviders[0] : config.plugins.kugouMusic.provider;
   const candidates = await generateAiHotSongCandidates(config.llm, targetCount, DEFAULT_AI_HOT_SONG_PROMPT, existingSongs);
-  const playable = await resolveAiGeneratedHotSongs(config, candidates, targetCount);
+  const playable = await resolveAiGeneratedHotSongs(config, candidates, targetCount, provider);
   const seen = new Set(existingSongs.map(kugouSongKey));
   const addedSongs = [];
-  for (const song of playable.map(normalizeKugouSong)) {
+  for (const song of playable.map(normalizeMusicSong)) {
     const key = kugouSongKey(song);
     if (!key || seen.has(key) || !song.audioUrl) {
       continue;
@@ -5612,9 +7831,23 @@ async function topUpFlowFillerProgram(programId, options = {}) {
     ...(Array.isArray(program.playlist) ? program.playlist : []),
     ...addedSongs.map(kugouSongToPlaylistItem),
   ];
+  const effectiveFillerElapsed = Number(options.effectiveFillerElapsed);
+  const revision = Number.isFinite(effectiveFillerElapsed) && effectiveFillerElapsed > 0
+    ? {
+        effectiveFillerElapsed: Math.round(effectiveFillerElapsed),
+        previousSongCount: existingSongs.length,
+        publishDate: program.publishDate || localDateString(),
+        songCount: existingSongs.length + addedSongs.length,
+      }
+    : null;
+  const fillerTimeline = [
+    ...(Array.isArray(program.fillerTimeline) ? program.fillerTimeline : []),
+    ...(revision ? [revision] : []),
+  ].slice(-20);
   const firstAudio = nextPlaylist.find((item) => item.audioUrl);
   const updated = updateProgram(program.id, {
     playlistJson: JSON.stringify(nextPlaylist),
+    fillerTimeline,
     audioUrl: firstAudio?.audioUrl ?? program.audioUrl,
     audioPath: firstAudio?.audioPath ?? program.audioPath,
     status: firstAudio ? "ready" : program.status,
@@ -5637,13 +7870,35 @@ function updateFlowPresetAutoFill(row, patch) {
   } catch {
     payload = {};
   }
-  const autoFillSongs = Array.isArray(patch.autoFillSongs)
-    ? patch.autoFillSongs.map(normalizeKugouSong).filter((song) => song.title || song.hash || song.albumAudioId || song.audioUrl)
-    : [];
+  const hasPlaylistId = Object.prototype.hasOwnProperty.call(patch, "autoFillPlaylistId");
+  const autoFillPlaylistId = hasPlaylistId
+    ? (String(patch.autoFillPlaylistId ?? "").trim() || null)
+    : (String(payload.autoFillPlaylistId ?? "").trim() || null);
+  const musicPlaylist = autoFillPlaylistId ? readMusicPlaylistById(autoFillPlaylistId) : null;
+  const autoFillSongs = musicPlaylist
+    ? musicPlaylist.songs
+    : normalizeMusicPlaylistSongs(
+        Array.isArray(patch.autoFillSongs) ? patch.autoFillSongs : payload.autoFillSongs,
+      );
+  const playbackModeInput = Object.prototype.hasOwnProperty.call(patch, "autoFillPlaybackMode")
+    ? patch.autoFillPlaybackMode
+    : payload.autoFillPlaybackMode;
   const nextPayload = {
     ...payload,
     autoFillEnabled: patch.autoFillEnabled !== false,
     autoFillKeywords: String(patch.autoFillKeywords ?? "").trim(),
+    autoFillProvider: normalizeMusicProvider(
+      Object.prototype.hasOwnProperty.call(patch, "autoFillProvider") ? patch.autoFillProvider : payload.autoFillProvider,
+      "auto",
+    ),
+    autoFillRestartFromBeginning: Object.prototype.hasOwnProperty.call(patch, "autoFillRestartFromBeginning")
+      ? Boolean(patch.autoFillRestartFromBeginning)
+      : Boolean(payload.autoFillRestartFromBeginning),
+    autoFillPlaybackMode: normalizeMusicPlaybackMode(
+      playbackModeInput,
+      musicPlaylist?.playbackMode ?? "sequential",
+    ),
+    autoFillPlaylistId,
     autoFillSongs,
     nodes: Array.isArray(payload.nodes) ? payload.nodes : [],
     publishDate: normalizePublishDate(patch.publishDate) || payload.publishDate || null,
@@ -5653,7 +7908,7 @@ function updateFlowPresetAutoFill(row, patch) {
   return rowToFlowPreset(db.prepare("SELECT * FROM flow_presets WHERE id = ?").get(row.id));
 }
 
-function saveFlowPresetAutoFillSongs(presetId, songs, publishDate) {
+function saveFlowPresetAutoFillSongs(presetId, songs, publishDate, options = {}) {
   const row = db.prepare("SELECT * FROM flow_presets WHERE id = ?").get(presetId);
   if (!row) {
     return null;
@@ -5664,11 +7919,23 @@ function saveFlowPresetAutoFillSongs(presetId, songs, publishDate) {
   } catch {
     payload = {};
   }
-  const autoFillSongs = Array.isArray(songs)
-    ? songs.map(normalizeKugouSong).filter((song) => song.title || song.hash || song.albumAudioId || song.audioUrl)
-    : [];
+  const hasPlaylistId = Object.prototype.hasOwnProperty.call(options, "autoFillPlaylistId");
+  const autoFillPlaylistId = hasPlaylistId
+    ? (String(options.autoFillPlaylistId ?? "").trim() || null)
+    : (String(payload.autoFillPlaylistId ?? "").trim() || null);
+  const musicPlaylist = autoFillPlaylistId ? readMusicPlaylistById(autoFillPlaylistId) : null;
+  const autoFillSongs = musicPlaylist ? musicPlaylist.songs : normalizeMusicPlaylistSongs(songs);
   const nextPayload = {
     ...payload,
+    autoFillProvider: normalizeMusicProvider(options.autoFillProvider ?? payload.autoFillProvider, "auto"),
+    autoFillRestartFromBeginning: Object.prototype.hasOwnProperty.call(options, "autoFillRestartFromBeginning")
+      ? Boolean(options.autoFillRestartFromBeginning)
+      : Boolean(payload.autoFillRestartFromBeginning),
+    autoFillPlaybackMode: normalizeMusicPlaybackMode(
+      options.autoFillPlaybackMode ?? payload.autoFillPlaybackMode,
+      musicPlaylist?.playbackMode ?? "sequential",
+    ),
+    autoFillPlaylistId,
     autoFillSongs,
     nodes: Array.isArray(payload.nodes) ? payload.nodes : [],
     publishDate: normalizePublishDate(publishDate) || payload.publishDate || null,
@@ -5679,9 +7946,15 @@ function saveFlowPresetAutoFillSongs(presetId, songs, publishDate) {
 }
 
 async function refreshFlowAutoFillSongsForRun(config, preset, publishDate) {
-  const existingSongs = Array.isArray(preset.autoFillSongs)
-    ? preset.autoFillSongs.map(normalizeKugouSong).filter((song) => song.title || song.hash || song.albumAudioId || song.audioUrl)
-    : [];
+  const existingSongs = normalizeMusicPlaylistSongs(preset.autoFillSongs);
+
+  if (preset.autoFillPlaylistId) {
+    return {
+      songs: existingSongs,
+      message: `沿用保存的自定义歌单：${existingSongs.length} 首（${preset.autoFillPlaybackMode === "shuffle" ? "随机播放" : "顺序播放"}）`,
+      preset,
+    };
+  }
 
   if (!config.plugins.kugouMusic.enabled) {
     return {
@@ -5695,11 +7968,16 @@ async function refreshFlowAutoFillSongsForRun(config, preset, publishDate) {
 
   try {
     const candidates = await generateAiHotSongCandidates(config.llm, FLOW_FILLER_INITIAL_SONGS, DEFAULT_AI_HOT_SONG_PROMPT);
-    const songs = await resolveAiGeneratedHotSongs(config, candidates, FLOW_FILLER_INITIAL_SONGS);
+    const songs = await resolveAiGeneratedHotSongs(config, candidates, FLOW_FILLER_INITIAL_SONGS, preset.autoFillProvider);
     if (!songs.length) {
       throw new Error("大模型生成的歌曲未解析到可播放地址");
     }
-    const savedPreset = saveFlowPresetAutoFillSongs(preset.id, songs, publishDate);
+    const savedPreset = saveFlowPresetAutoFillSongs(preset.id, songs, publishDate, {
+      autoFillPlaybackMode: preset.autoFillPlaybackMode,
+      autoFillPlaylistId: preset.autoFillPlaylistId,
+      autoFillProvider: preset.autoFillProvider,
+      autoFillRestartFromBeginning: preset.autoFillRestartFromBeginning,
+    });
     return {
       songs,
       message: `AI 已刷新音乐连播歌单：${songs.length} 首`,
@@ -5733,6 +8011,7 @@ function rowToProgramPreset(row) {
     id: row.id,
     name: row.name,
     type: payload.type ?? "custom",
+    contentMode: payload.contentMode === "direct" ? "direct" : "ai",
     title: payload.title ?? row.name,
     categoryId: payload.categoryId ?? null,
     prompt: payload.prompt ?? "",
@@ -5760,6 +8039,7 @@ app.post("/api/program-presets", requireAdmin, (request, response) => {
   const name = String(request.body?.name ?? "").trim() || "未命名预设";
   const payload = JSON.stringify({
     type: request.body?.type ?? "custom",
+    contentMode: request.body?.contentMode === "direct" ? "direct" : "ai",
     title: request.body?.title ?? name,
     categoryId: request.body?.categoryId ?? null,
     prompt: request.body?.prompt ?? "",
@@ -5774,6 +8054,7 @@ app.post("/api/program-presets", requireAdmin, (request, response) => {
           hostId: String(request.body.kugou.hostId ?? "").trim() || null,
           maxSongs: Number(request.body.kugou.maxSongs ?? 5),
           name: String(request.body.kugou.name ?? "").trim(),
+          provider: normalizeMusicProvider(request.body.kugou.provider),
           quality: String(request.body.kugou.quality ?? "128").trim(),
           rankType: Number(request.body.kugou.rankType ?? 0),
           searchKeywords: String(request.body.kugou.searchKeywords ?? "").trim(),
@@ -5782,7 +8063,7 @@ app.post("/api/program-presets", requireAdmin, (request, response) => {
         }
       : null,
     songs: Array.isArray(request.body?.songs)
-      ? request.body.songs.map(normalizeKugouSong).filter((song) => song.title || song.hash || song.albumAudioId)
+      ? request.body.songs.map(normalizeMusicSong).filter((song) => song.title || song.hash || song.sourceId || song.albumAudioId)
       : [],
   });
   const now = nowIso();
@@ -5805,6 +8086,95 @@ app.delete("/api/program-presets/:id", requireAdmin, (request, response) => {
   response.json({ message: "预设节目已删除" });
 });
 
+app.get("/api/music-playlists", requireAdmin, (request, response) => {
+  const playlists = db
+    .prepare("SELECT * FROM music_playlists ORDER BY COALESCE(updated_at, created_at) DESC, created_at DESC")
+    .all()
+    .map(rowToMusicPlaylist);
+  response.json({ playlists, total: playlists.length });
+});
+
+app.post("/api/music-playlists", requireAdmin, (request, response) => {
+  const requestedId = String(request.body?.id ?? "").trim();
+  const id = requestedId || randomUUID();
+  const existingRow = db.prepare("SELECT * FROM music_playlists WHERE id = ?").get(id);
+  const existing = rowToMusicPlaylist(existingRow);
+  const requestedMode = request.body?.playbackMode;
+  if (
+    requestedMode !== undefined &&
+    !["sequential", "shuffle"].includes(String(requestedMode).trim().toLowerCase())
+  ) {
+    response.status(400).json({
+      message: "播放模式无效",
+      error: "playbackMode 仅支持 sequential 或 shuffle",
+    });
+    return;
+  }
+
+  const name = String(request.body?.name ?? existing?.name ?? "").trim() || "未命名歌单";
+  const songs = Array.isArray(request.body?.songs)
+    ? normalizeMusicPlaylistSongs(request.body.songs)
+    : (existing?.songs ?? []);
+  const playbackMode = normalizeMusicPlaybackMode(requestedMode ?? existing?.playbackMode);
+  const timestamp = nowIso();
+  if (existingRow) {
+    db.prepare(`
+      UPDATE music_playlists
+      SET name = ?, songs_json = ?, playback_mode = ?, updated_at = ?
+      WHERE id = ?
+    `).run(name, JSON.stringify(songs), playbackMode, timestamp, id);
+  } else {
+    db.prepare(`
+      INSERT INTO music_playlists (id, name, songs_json, playback_mode, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(id, name, JSON.stringify(songs), playbackMode, timestamp, timestamp);
+  }
+
+  const playlist = readMusicPlaylistById(id);
+  response.json({
+    playlist,
+    message: `自定义歌单已保存：${playlist.songCount} 首，${playbackMode === "shuffle" ? "随机播放" : "顺序播放"}`,
+  });
+});
+
+app.delete("/api/music-playlists/:id", requireAdmin, (request, response) => {
+  const playlistId = String(request.params.id ?? "").trim();
+  const playlist = readMusicPlaylistById(playlistId);
+  const result = db.transaction(() => {
+    const deleted = db.prepare("DELETE FROM music_playlists WHERE id = ?").run(playlistId);
+    if (!deleted.changes) {
+      return deleted;
+    }
+    const flowRows = db.prepare("SELECT id, payload FROM flow_presets").all();
+    const updateFlow = db.prepare("UPDATE flow_presets SET payload = ?, updated_at = ? WHERE id = ?");
+    for (const row of flowRows) {
+      try {
+        const payload = JSON.parse(row.payload ?? "{}");
+        if (String(payload.autoFillPlaylistId ?? "").trim() !== playlistId) {
+          continue;
+        }
+        updateFlow.run(JSON.stringify({
+          ...payload,
+          autoFillPlaylistId: null,
+          autoFillPlaybackMode: normalizeMusicPlaybackMode(
+            payload.autoFillPlaybackMode,
+            playlist?.playbackMode ?? "sequential",
+          ),
+          autoFillSongs: normalizeMusicPlaylistSongs(payload.autoFillSongs?.length ? payload.autoFillSongs : playlist?.songs),
+        }), nowIso(), row.id);
+      } catch {
+        // Keep malformed legacy flow payloads untouched; deleting the playlist must still succeed.
+      }
+    }
+    return deleted;
+  })();
+  if (!result.changes) {
+    response.status(404).json({ message: "自定义歌单不存在" });
+    return;
+  }
+  response.json({ id: playlistId, message: "自定义歌单已删除，引用它的流程已保留歌曲并解除关联" });
+});
+
 app.get("/api/flow-presets", requireAdmin, (request, response) => {
   const rows = db
     .prepare("SELECT * FROM flow_presets ORDER BY COALESCE(updated_at, created_at) DESC, created_at DESC")
@@ -5815,6 +8185,8 @@ app.get("/api/flow-presets", requireAdmin, (request, response) => {
 
 app.post("/api/flow-presets", requireAdmin, (request, response) => {
   const id = String(request.body?.id ?? "").trim() || randomUUID();
+  const existingRow = db.prepare("SELECT * FROM flow_presets WHERE id = ?").get(id);
+  const existingPreset = rowToFlowPreset(existingRow);
   const name = String(request.body?.name ?? "").trim() || "未命名流程";
   const nodes = Array.isArray(request.body?.nodes) ? request.body.nodes : [];
   const publishDate = normalizePublishDate(request.body?.publishDate);
@@ -5824,14 +8196,43 @@ app.post("/api/flow-presets", requireAdmin, (request, response) => {
   const enabled = request.body?.enabled === false ? 0 : 1;
   const autoFillEnabled = request.body?.autoFillEnabled !== false;
   const autoFillKeywords = String(request.body?.autoFillKeywords ?? "").trim();
-  const autoFillSongs = Array.isArray(request.body?.autoFillSongs)
-    ? request.body.autoFillSongs.map(normalizeKugouSong).filter((song) => song.title || song.hash || song.albumAudioId || song.audioUrl)
-    : [];
-  const payload = JSON.stringify({ autoFillEnabled, autoFillKeywords, autoFillSongs, nodes, publishDate });
+  const autoFillProvider = normalizeMusicProvider(request.body?.autoFillProvider ?? existingPreset?.autoFillProvider, "auto");
+  const autoFillRestartFromBeginning = Object.prototype.hasOwnProperty.call(request.body ?? {}, "autoFillRestartFromBeginning")
+    ? Boolean(request.body.autoFillRestartFromBeginning)
+    : Boolean(existingPreset?.autoFillRestartFromBeginning);
+  const hasPlaylistId = Object.prototype.hasOwnProperty.call(request.body ?? {}, "autoFillPlaylistId");
+  const autoFillPlaylistId = hasPlaylistId
+    ? request.body.autoFillPlaylistId
+    : existingPreset?.autoFillPlaylistId;
+  const hasPlaybackMode = Object.prototype.hasOwnProperty.call(request.body ?? {}, "autoFillPlaybackMode");
+  const autoFillPlaybackMode = hasPlaybackMode
+    ? request.body.autoFillPlaybackMode
+    : (hasPlaylistId ? undefined : existingPreset?.autoFillPlaybackMode);
+  const selection = resolveAutoFillPlaylistState({
+    autoFillPlaybackMode,
+    autoFillPlaylistId,
+    autoFillSongs: Array.isArray(request.body?.autoFillSongs)
+      ? request.body.autoFillSongs
+      : existingPreset?.autoFillSongs,
+  });
+  if (selection.playlistId && !selection.playlist) {
+    response.status(404).json({ message: "选择的自定义歌单不存在", playlistId: selection.playlistId });
+    return;
+  }
+  const payload = JSON.stringify({
+    autoFillEnabled,
+    autoFillKeywords,
+    autoFillProvider,
+    autoFillRestartFromBeginning,
+    autoFillPlaybackMode: selection.playbackMode,
+    autoFillPlaylistId: selection.playlistId,
+    autoFillSongs: selection.songs,
+    nodes,
+    publishDate,
+  });
   const now = nowIso();
 
-  const existing = db.prepare("SELECT id FROM flow_presets WHERE id = ?").get(id);
-  if (existing) {
+  if (existingRow) {
     db.prepare(`
       UPDATE flow_presets
       SET name = ?, payload = ?, scheduled_time = ?, enabled = ?, updated_at = ?
@@ -5858,10 +8259,38 @@ app.post("/api/flow-presets/:id/auto-fill/apply", requireAdmin, async (request, 
   const publishDate = normalizePublishDate(request.body?.publishDate) || localDateString();
   const autoFillEnabled = request.body?.autoFillEnabled !== false;
   const autoFillKeywords = String(request.body?.autoFillKeywords ?? "").trim();
-  const incomingSongs = Array.isArray(request.body?.autoFillSongs) ? request.body.autoFillSongs : [];
+  const currentPreset = rowToFlowPreset(row);
+  const autoFillProvider = normalizeMusicProvider(request.body?.autoFillProvider ?? currentPreset.autoFillProvider, "auto");
+  const autoFillRestartFromBeginning = Object.prototype.hasOwnProperty.call(request.body ?? {}, "autoFillRestartFromBeginning")
+    ? Boolean(request.body.autoFillRestartFromBeginning)
+    : Boolean(currentPreset.autoFillRestartFromBeginning);
+  const hasPlaylistId = Object.prototype.hasOwnProperty.call(request.body ?? {}, "autoFillPlaylistId");
+  const autoFillPlaylistId = hasPlaylistId
+    ? request.body.autoFillPlaylistId
+    : currentPreset.autoFillPlaylistId;
+  const hasPlaybackMode = Object.prototype.hasOwnProperty.call(request.body ?? {}, "autoFillPlaybackMode");
+  const autoFillPlaybackMode = hasPlaybackMode
+    ? request.body.autoFillPlaybackMode
+    : (hasPlaylistId ? undefined : currentPreset.autoFillPlaybackMode);
+  const selection = resolveAutoFillPlaylistState({
+    autoFillPlaybackMode,
+    autoFillPlaylistId,
+    autoFillSongs: Array.isArray(request.body?.autoFillSongs)
+      ? request.body.autoFillSongs
+      : currentPreset.autoFillSongs,
+  });
+  if (selection.playlistId && !selection.playlist) {
+    response.status(404).json({ message: "选择的自定义歌单不存在", playlistId: selection.playlistId });
+    return;
+  }
+  const incomingSongs = selection.songs;
   let preset = updateFlowPresetAutoFill(row, {
     autoFillEnabled,
     autoFillKeywords,
+    autoFillProvider,
+    autoFillRestartFromBeginning,
+    autoFillPlaybackMode: selection.playbackMode,
+    autoFillPlaylistId: selection.playlistId,
     autoFillSongs: incomingSongs,
     publishDate,
   });
@@ -5872,6 +8301,8 @@ app.post("/api/flow-presets/:id/auto-fill/apply", requireAdmin, async (request, 
       program: null,
       programs: readProgramList(),
       songs: [],
+      musicPlaylist: selection.playlist,
+      playbackMode: selection.playbackMode,
       message: "音乐连播已在流程中关闭；已保存流程设置",
     });
     return;
@@ -5879,12 +8310,22 @@ app.post("/api/flow-presets/:id/auto-fill/apply", requireAdmin, async (request, 
 
   try {
     const config = readConfig();
-    const { playlist, songs } = await buildFlowFillerPlaylist(config, incomingSongs, autoFillKeywords, publishDate);
+    const { playlist, songs } = await buildFlowFillerPlaylist(
+      config,
+      incomingSongs,
+      autoFillKeywords,
+      publishDate,
+      { playbackMode: selection.playbackMode, playlistId: selection.playlistId, provider: autoFillProvider },
+    );
     const latestPresetRow = db.prepare("SELECT * FROM flow_presets WHERE id = ?").get(request.params.id);
     if (latestPresetRow) {
       preset = updateFlowPresetAutoFill(latestPresetRow, {
         autoFillEnabled,
         autoFillKeywords,
+        autoFillProvider,
+        autoFillRestartFromBeginning,
+        autoFillPlaybackMode: selection.playbackMode,
+        autoFillPlaylistId: selection.playlistId,
         autoFillSongs: songs,
         publishDate,
       });
@@ -5906,6 +8347,11 @@ app.post("/api/flow-presets/:id/auto-fill/apply", requireAdmin, async (request, 
       scheduledAt: null,
       sourceType: "flow-filler",
       pluginId: "kugou-music",
+      musicPlaylistId: selection.playlistId,
+      playbackMode: selection.playbackMode,
+      playbackResetAt: selection.playbackMode === "sequential" && autoFillRestartFromBeginning ? timestamp : existing?.playbackResetAt ?? null,
+      restartFromBeginning: selection.playbackMode === "sequential" && autoFillRestartFromBeginning,
+      fillerTimeline: [],
       categoryId: defaultCategoryIdForName("音乐专题"),
       playbackSpeed: 1,
       publishDate,
@@ -5934,7 +8380,9 @@ app.post("/api/flow-presets/:id/auto-fill/apply", requireAdmin, async (request, 
       program,
       programs: readProgramList(),
       songs,
-      message: `音乐连播已立即应用：${playlist.length} 首歌曲`,
+      musicPlaylist: selection.playlist,
+      playbackMode: selection.playbackMode,
+      message: `音乐连播已立即应用：${playlist.length} 首歌曲（${selection.playbackMode === "shuffle" ? "随机播放" : autoFillRestartFromBeginning ? "从第一首开始顺序播放" : "顺序播放"}）`,
     });
   } catch (error) {
     response.status(502).json({
@@ -5952,6 +8400,11 @@ app.post("/api/programs/:id/filler/top-up", async (request, response) => {
   const programId = String(request.params.id ?? "").trim();
   if (!programId) {
     response.status(400).json({ message: "缺少音乐连播节目 ID" });
+    return;
+  }
+  const effectiveFillerElapsed = Number(request.body?.effectiveFillerElapsed);
+  if (!Number.isFinite(effectiveFillerElapsed) || effectiveFillerElapsed <= 0) {
+    response.status(400).json({ message: "续批缺少有效的时间轴生效位置" });
     return;
   }
 
@@ -5972,6 +8425,7 @@ app.post("/api/programs/:id/filler/top-up", async (request, response) => {
   try {
     const result = await topUpFlowFillerProgram(programId, {
       batchSize: Number(request.body?.batchSize ?? FLOW_FILLER_TOP_UP_BATCH_SONGS),
+      effectiveFillerElapsed,
       maxSongs: Number(request.body?.maxSongs ?? FLOW_FILLER_TARGET_SONGS),
     });
     response.json({
@@ -6196,9 +8650,27 @@ async function runFlowPreset(preset, publishDate, options = {}) {
       startedAt,
       preset.id,
     );
-  let autoFillSongs = Array.isArray(workingPreset.autoFillSongs) ? workingPreset.autoFillSongs : [];
-  let autoFillMessage = "";
-  if (workingPreset.autoFillEnabled !== false && options.refreshAutoFillSongs !== false) {
+  const savedPlaylistState = resolveAutoFillPlaylistState({
+    autoFillPlaybackMode: workingPreset.autoFillPlaybackMode,
+    autoFillPlaylistId: workingPreset.autoFillPlaylistId,
+    autoFillSongs: workingPreset.autoFillSongs,
+  });
+  if (savedPlaylistState.playlist) {
+    workingPreset = {
+      ...workingPreset,
+      autoFillPlaylistName: savedPlaylistState.playlist.name,
+      autoFillSongs: savedPlaylistState.songs,
+    };
+  }
+  let autoFillSongs = savedPlaylistState.songs;
+  let autoFillMessage = workingPreset.autoFillPlaylistId
+    ? `沿用保存的自定义歌单：${autoFillSongs.length} 首（${workingPreset.autoFillPlaybackMode === "shuffle" ? "随机播放" : "顺序播放"}）`
+    : (autoFillSongs.length ? `沿用已有音乐连播歌单：${autoFillSongs.length} 首` : "");
+  if (
+    workingPreset.autoFillEnabled !== false &&
+    options.refreshAutoFillSongs !== false &&
+    !workingPreset.autoFillPlaylistId
+  ) {
     saveSummary({
       currentMessage: "正在调用大模型生成音乐连播歌曲候选，并解析可播放地址。",
       currentNode: {
@@ -6228,6 +8700,10 @@ async function runFlowPreset(preset, publishDate, options = {}) {
         kind: "kugou-random",
         title: "音乐连播",
         keywords: workingPreset.autoFillKeywords ?? "",
+        musicPlaylistId: workingPreset.autoFillPlaylistId ?? null,
+        playbackMode: normalizeMusicPlaybackMode(workingPreset.autoFillPlaybackMode),
+        provider: workingPreset.autoFillProvider,
+        restartFromBeginning: Boolean(workingPreset.autoFillRestartFromBeginning),
         songs: autoFillSongs,
         aiSongMessage: autoFillMessage,
         transitionBefore: null,
@@ -6316,7 +8792,7 @@ app.post("/api/flow-presets/:id/run", requireAdmin, async (request, response) =>
 
     const resolvedPublishDate = normalizePublishDate(request.body?.publishDate) || normalizePublishDate(preset.publishDate) || localDateString();
     flowSchedulerRunning.add(preset.id);
-    const refreshAutoFillSongs = request.body?.refreshAutoFillSongs === true;
+    const refreshAutoFillSongs = request.body?.refreshAutoFillSongs !== false;
     runFlowPreset(preset, resolvedPublishDate, { refreshAutoFillSongs })
       .catch((error) => {
         markFlowRunFailed(preset, resolvedPublishDate, error);

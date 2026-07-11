@@ -2,6 +2,10 @@ node_modules/
 dist/
 work/
 server/storage/
+suno-api/.playwright-browsers/
+suno-api/.next/
+suno-api/public/get-cookie-demo.gif
+suno-api/public/get-cookie-demo.mp4
 
 .env
 .env.*
@@ -13,3 +17,8 @@ server/storage/
 *.db-*
 .DS_Store
 coverage/
+
+# Editor / agent tooling
+.agents/
+.codex/
+.opencode/

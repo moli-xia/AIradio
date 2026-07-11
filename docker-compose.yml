@@ -1,7 +1,7 @@
 services:
-  ai-radio:
-    image: superneed/ai-radio:latest
-    container_name: ai-radio
+  airadio:
+    image: superneed/airadio:latest
+    container_name: airadio
     restart: unless-stopped
     ports:
       - "4177:4177"
@@ -14,7 +14,7 @@ services:
       AIRADIO_ADMIN_USER: ${AIRADIO_ADMIN_USER:-admin}
       AIRADIO_ADMIN_PASSWORD: ${AIRADIO_ADMIN_PASSWORD:?set AIRADIO_ADMIN_PASSWORD in .env}
     volumes:
-      - ai-radio-data:/data
+      - airadio-data:/data
 
 volumes:
-  ai-radio-data:
+  airadio-data:

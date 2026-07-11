@@ -6,8 +6,10 @@ AI Radio 是一个面向中文场景的 24 小时 AI 电台应用，包含前台
 
 - 24 小时节目流：支持后台一键生成全天节目。
 - 定时任务：可配置每天固定时间自动生成当天节目。
-- 内容插件：每日早报、今日热榜、酷狗音乐与自定义节目。
-- AI 生成：调用 OpenAI 兼容大模型生成节目文案、音乐连播歌单。
+- 内容插件：每日早报、今日热榜、酷狗音乐、网易云音乐、QQ 音乐与自定义节目。
+- AI 生成：调用 OpenAI 兼容大模型生成节目文案、音乐连播歌单及 Suno 歌曲提示词与歌词。
+- AI 音乐：内置对本项目 `suno-api` 的调用，支持随机批量全自动创作、手动 Lyrics / Styles、男女声选择、Suno 双版本试听选择及生成音频本地归档。
+- 网络媒体节目：支持直接音频、含音轨的视频文件、HLS 地址及 yt-dlp 可识别的播放页面，可自动解析 Bilibili 等站点、检测格式/时长、用 FFmpeg 本地提取音轨，并在播放前加入 AI 或原文介绍配音。
 - TTS 配音：支持 OpenAI 兼容 TTS 接口。
 - 生成进度：后台显示生成耗时、节点进度、当前处理节点、失败信息。
 - 音乐连播补歌：AI 歌单支持分批生成，播放列表低于阈值时继续补充。
@@ -18,7 +20,7 @@ AI Radio 是一个面向中文场景的 24 小时 AI 电台应用，包含前台
 镜像仓库：
 
 ```bash
-docker pull superneed/ai-radio:latest
+docker pull superneed/airadio:latest
 ```
 
 该镜像支持：
@@ -38,14 +40,14 @@ mkdir -p ./airadio-data
 
 ```bash
 docker run -d \
-  --name ai-radio \
+  --name airadio \
   --restart unless-stopped \
   -p 4177:4177 \
   -e TZ=Asia/Shanghai \
   -e AIRADIO_ADMIN_USER=admin \
   -e AIRADIO_ADMIN_PASSWORD='请改成强密码' \
   -v "$PWD/airadio-data:/data" \
-  superneed/ai-radio:latest
+  superneed/airadio:latest
 ```
 
 容器启动时会自动创建并修正 `/data`、`/data/audio`、`/data/sound-effects` 的权限，因此可以直接使用宿主机目录挂载。
@@ -86,7 +88,7 @@ docker compose up -d
 查看日志：
 
 ```bash
-docker compose logs -f ai-radio
+docker compose logs -f airadio
 ```
 
 停止：
@@ -112,7 +114,7 @@ docker compose down -v
 构建当前平台镜像：
 
 ```bash
-docker build -t superneed/ai-radio:local .
+docker build -t superneed/airadio:local .
 ```
 
 运行本地构建镜像：
@@ -121,7 +123,7 @@ docker build -t superneed/ai-radio:local .
 docker run --rm -p 4177:4177 \
   -e AIRADIO_ADMIN_PASSWORD='请改成强密码' \
   -v "$PWD/airadio-data:/data" \
-  superneed/ai-radio:local
+  superneed/airadio:local
 ```
 
 ## 构建并推送多架构镜像
@@ -129,7 +131,7 @@ docker run --rm -p 4177:4177 \
 准备 buildx：
 
 ```bash
-docker buildx create --name ai-radio-builder --use
+docker buildx create --name airadio-builder --use
 docker buildx inspect --bootstrap
 ```
 
@@ -144,15 +146,15 @@ docker login
 ```bash
 docker buildx build \
   --platform linux/amd64,linux/arm64 \
-  -t superneed/ai-radio:latest \
-  -t superneed/ai-radio:0.1.1 \
+  -t superneed/airadio:latest \
+  -t superneed/airadio:0.1.1 \
   --push .
 ```
 
 查看镜像架构：
 
 ```bash
-docker buildx imagetools inspect superneed/ai-radio:latest
+docker buildx imagetools inspect superneed/airadio:latest
 ```
 
 ## 环境变量
@@ -163,7 +165,7 @@ docker buildx imagetools inspect superneed/ai-radio:latest
 | `TZ` | `Asia/Shanghai` | 应用墙上时间，建议保持中国时区 |
 | `AIRADIO_API_HOST` | `0.0.0.0` | HTTP 监听地址 |
 | `AIRADIO_API_PORT` | `4177` | HTTP 监听端口 |
-| `AIRADIO_STORAGE_DIR` | `/data` | SQLite、音频、音效等运行时数据目录 |
+| `AIRADIO_STORAGE_DIR` | `./server/storage`（本地）/ `/data`（Docker） | SQLite、音频、音效等运行时数据目录；运行服务的用户必须拥有写权限 |
 | `AIRADIO_ADMIN_USER` | `admin` | 后台管理员用户名 |
 | `AIRADIO_ADMIN_PASSWORD` | 无 | 后台管理员密码，必须设置 |
 | `KUGOU_WX_APPID` | 空 | 可选，酷狗微信登录相关配置 |
@@ -173,17 +175,21 @@ docker buildx imagetools inspect superneed/ai-radio:latest
 
 ## 后台 API 配置
 
-应用不会在源码或镜像中内置大模型、TTS、ALAPI、Suno、酷狗 Cookie 等密钥。
+应用不会在源码或镜像中内置大模型、TTS、ALAPI、Suno、酷狗、网易云或 QQ 音乐 Cookie 等密钥。
 
 首次启动后进入后台，在配置页面填写：
 
 - 大模型 API Key、Base URL、模型名。
 - TTS API Key、Base URL、模型名和音色。
 - 每日早报 / 今日热榜 token。
-- 酷狗 Cookie 或登录信息。
-- Suno API Key。
+- 酷狗、网易云或 QQ 音乐 Cookie / 登录信息。
+- Suno Cookie、本地 `suno-api` 地址和模型版本；自动模式会为付费账号选择 v5.5，为免费账号选择 v4.5。Suno 触发 hCaptcha 时还需要填写 2Captcha API Key。
 
 这些配置会写入运行时 SQLite 数据库。Docker 部署时请持久化 `/data`，否则容器重建后配置和生成的音频会丢失。
+
+Suno Cookie 获取方法：登录 [Suno](https://suno.com/)，按 `F12` 打开浏览器开发者工具，在 Network 中找到 `client?__clerk_api_version=2025-11-10&_clerk_js_version=5.117.0` 请求。优先复制 Request Headers 中的完整 `Cookie`；也可以复制响应里的四段 `Set-Cookie`，后台会自动合并并去除 `Path`、`Secure`、`SameSite` 等属性。最终 Cookie 必须包含 `__client`。Cookie 属于账号凭证，请勿提交到代码仓库或发送给他人；过期后需要重新获取。
+
+Suno 当前会在歌曲生成时要求 hCaptcha token。项目内的 `suno-api` 使用 2Captcha 完成挑战，因此还需在“模型配置 → 本地 suno-api”填写有效且有余额的 2Captcha API Key。Suno 订阅额度与 2Captcha 余额是两个独立账户。
 
 ## 本地开发
 
@@ -191,7 +197,12 @@ docker buildx imagetools inspect superneed/ai-radio:latest
 
 ```bash
 npm install
+npm run install:music-apis
+npm run install:suno-api
+npm run build:suno-api
 ```
+
+第二条命令安装项目内 `NeteaseCloudMusicApi` 与 `QQMusicApi` 的运行依赖，后两条命令安装本地 `suno-api`、下载它所需的固定版本 Chromium 并完成构建。浏览器保存在 `suno-api/.playwright-browsers`，运行服务的用户必须有读取和执行权限。后台“接口 API”负责三种音乐接口的启停和 Cookie；节目来源、选歌类型、数量、主播与串场设置在“节目制作”维护。
 
 创建本地环境变量：
 
@@ -222,6 +233,24 @@ npm run build
 ```bash
 AIRADIO_ADMIN_PASSWORD='请改成强密码' npm run start
 ```
+
+网络媒体节目需要系统安装 `ffmpeg`、`ffprobe` 和最新版本的 `yt-dlp`。Debian / Ubuntu 可执行：
+
+```bash
+sudo apt-get install ffmpeg
+sudo curl -L --fail https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux -o /usr/local/bin/yt-dlp
+sudo chmod 0755 /usr/local/bin/yt-dlp
+```
+
+Docker 镜像构建流程已自动安装 FFmpeg 和 yt-dlp。后台会先尝试直链探测，再使用 yt-dlp 解析播放页面；Bilibili 页面遇到 412 风控时会自动改用公开播放接口。较长媒体可使用“保存节目后台生成”，任务会立即入库并在服务端继续解析、下载和转码，节目状态会由“后台生成中”自动更新为“可播”或“生成失败”。需要登录的页面可以临时填写站点 Cookie，Cookie 不会写入节目或后台配置；DRM 内容仍不受支持。
+
+另开一个进程启动本地 Suno 服务：
+
+```bash
+npm run start:suno-api
+```
+
+它默认只监听 `127.0.0.1:3010`。使用 systemd 部署时可参考 [deploy/airadio-suno.service](deploy/airadio-suno.service)，按实际项目目录和 Node 路径调整后启用。Suno 音乐生成依赖有效的 Suno 账号 Cookie 与可用额度；未配置 Cookie 时，其他节目制作功能不受影响。
 
 ## 数据目录
 

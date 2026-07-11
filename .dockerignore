@@ -15,3 +15,8 @@ coverage
 *.db-*
 .DS_Store
 deploy
+suno-api
+suno-api.zip
+.agents
+.codex
+.opencode

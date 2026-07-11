@@ -1,0 +1,20 @@
+[Unit]
+Description=Airadio local Suno API service
+After=network.target
+
+[Service]
+Type=simple
+User=www
+Group=www
+WorkingDirectory=/www/wwwroot/airadio/suno-api
+Environment=NODE_ENV=production
+Environment=BROWSER=chromium
+Environment=BROWSER_HEADLESS=true
+Environment=BROWSER_LOCALE=zh-CN
+Environment=PLAYWRIGHT_BROWSERS_PATH=/www/wwwroot/airadio/suno-api/.playwright-browsers
+ExecStart=/usr/bin/node /www/wwwroot/airadio/suno-api/node_modules/next/dist/bin/next start -H 127.0.0.1 -p 3010
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
