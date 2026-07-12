@@ -1100,6 +1100,11 @@ function mediaSiteCookieFile(pageUrl, rawCookie) {
   return filePath;
 }
 
+// YouTube extraction now relies on yt-dlp's external JavaScript challenge
+// solver. The API already runs on Node, but yt-dlp does not enable Node unless
+// it is explicitly selected. Keep these flags on both probe and download runs.
+const ytDlpRuntimeArgs = ["--js-runtimes", "node"];
+
 async function probeMediaStream(mediaUrl, requestHeaders = {}) {
   const { stdout } = await execFileAsync("ffprobe", [
     "-v", "error",
@@ -1182,7 +1187,8 @@ async function resolveMediaPageWithYtDlp(pageUrl, siteCookie = "") {
   const cookieFile = mediaSiteCookieFile(pageUrl, siteCookie);
   try {
     const buildArgs = (impersonate) => [
-      "--no-config", "--no-playlist", "--no-warnings", "--skip-download",
+      "--no-config", ...ytDlpRuntimeArgs,
+      "--no-playlist", "--no-warnings", "--skip-download", "--force-ipv4",
       "--dump-single-json", "--socket-timeout", "30",
       ...(impersonate ? ["--impersonate", "chrome"] : []),
       "--format", "bestaudio/best",
@@ -1256,8 +1262,11 @@ async function probeRemoteMedia(input, options = {}) {
         throw new Error("服务器尚未安装 yt-dlp 或 FFmpeg，无法解析媒体页面");
       }
       const resolverDetail = String(resolverError?.stderr ?? resolverError?.message ?? resolverError).trim();
+      if (/No supported JavaScript runtime|JavaScript challenge|challenge solving failed/iu.test(resolverDetail)) {
+        throw new Error("YouTube 的 JavaScript 人机验证解析失败。请更新 Docker 镜像中的 yt-dlp，并确认容器内 Node.js 可用。");
+      }
       if (/\[youtube\]/iu.test(resolverDetail) && /Sign in to confirm|not a bot|Requested format is not available/iu.test(resolverDetail)) {
-        throw new Error("YouTube 触发了人机验证，返回的可用格式受限。请在节目制作的“站点 Cookie”中填写 YouTube 登录 Cookie 后重试，或稍后再试。");
+        throw new Error("YouTube 拒绝了这台服务器的解析请求。请按页面说明从独立无痕会话重新获取登录 Cookie；若新 Cookie 仍失败，通常是 VPS 出口 IP 被 YouTube 风控，请稍后再试或更换出口 IP。");
       }
       const directDetail = String(directError?.stderr ?? directError?.message ?? directError).trim().split("\n").slice(-1)[0];
       const shortDetail = resolverDetail.split("\n").slice(-2).join(" ");
@@ -1277,7 +1286,8 @@ async function storeRemoteMediaAudio(probe, programId, durationLimitSeconds) {
       cookieFile = mediaSiteCookieFile(probe.originalUrl, probe.siteCookie);
       const outputTemplate = outputPath.replace(/\.mp3$/u, ".%(ext)s");
       const commonArgs = (impersonate) => [
-        "--no-config", "--no-playlist", "--no-warnings",
+        "--no-config", ...ytDlpRuntimeArgs,
+        "--no-playlist", "--no-warnings",
         ...(impersonate ? ["--impersonate", "chrome"] : []),
         "--force-ipv4",
         "--socket-timeout", "30", "--retries", "10", "--fragment-retries", "10",
