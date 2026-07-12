@@ -1181,17 +1181,18 @@ async function resolveBilibiliPage(pageUrl, siteCookie = "") {
 async function resolveMediaPageWithYtDlp(pageUrl, siteCookie = "") {
   const cookieFile = mediaSiteCookieFile(pageUrl, siteCookie);
   try {
-    const args = [
+    const buildArgs = (impersonate) => [
       "--no-config", "--no-playlist", "--no-warnings", "--skip-download",
-      "--dump-single-json", "--socket-timeout", "30", "--impersonate", "chrome",
+      "--dump-single-json", "--socket-timeout", "30",
+      ...(impersonate ? ["--impersonate", "chrome"] : []),
       "--format", "bestaudio/best",
       ...(cookieFile ? ["--cookies", cookieFile] : []),
       pageUrl,
     ];
-    const runYtDlp = () => execFileAsync("yt-dlp", args, { maxBuffer: 16 * 1024 * 1024, timeout: 90_000 });
+    const runYtDlp = (impersonate) => execFileAsync("yt-dlp", buildArgs(impersonate), { maxBuffer: 16 * 1024 * 1024, timeout: 90_000 });
     let stdout;
     try {
-      ({ stdout } = await runYtDlp());
+      ({ stdout } = await runYtDlp(true));
     } catch (firstError) {
       const detail = String(firstError?.stderr ?? firstError?.message ?? "");
       const isYouTubeBotCheck = /youtube/iu.test(pageUrl)
@@ -1200,7 +1201,7 @@ async function resolveMediaPageWithYtDlp(pageUrl, siteCookie = "") {
         throw firstError;
       }
       await new Promise((resolve) => setTimeout(resolve, 2500));
-      ({ stdout } = await runYtDlp());
+      ({ stdout } = await runYtDlp(false));
     }
     const data = JSON.parse(String(stdout ?? "").trim());
     const selected = Array.isArray(data.requested_formats)
@@ -1275,8 +1276,10 @@ async function storeRemoteMediaAudio(probe, programId, durationLimitSeconds) {
     if (pageResolver) {
       cookieFile = mediaSiteCookieFile(probe.originalUrl, probe.siteCookie);
       const outputTemplate = outputPath.replace(/\.mp3$/u, ".%(ext)s");
-      const commonArgs = [
-        "--no-config", "--no-playlist", "--no-warnings", "--impersonate", "chrome", "--force-ipv4",
+      const commonArgs = (impersonate) => [
+        "--no-config", "--no-playlist", "--no-warnings",
+        ...(impersonate ? ["--impersonate", "chrome"] : []),
+        "--force-ipv4",
         "--socket-timeout", "30", "--retries", "10", "--fragment-retries", "10",
         "--retry-sleep", "http:linear=2::10", "--retry-sleep", "fragment:linear=1::5",
         "--concurrent-fragments", "4",
@@ -1287,7 +1290,7 @@ async function storeRemoteMediaAudio(probe, programId, durationLimitSeconds) {
       ];
       try {
         await execFileAsync("yt-dlp", [
-          ...commonArgs,
+          ...commonArgs(true),
           "--format", "bestaudio/best",
           probe.originalUrl,
         ], { maxBuffer: 8 * 1024 * 1024, timeout: 60 * 60_000 });
@@ -1299,7 +1302,7 @@ async function storeRemoteMediaAudio(probe, programId, durationLimitSeconds) {
           throw firstError;
         }
         await execFileAsync("yt-dlp", [
-          ...commonArgs,
+          ...commonArgs(false),
           "--extractor-args", "youtube:player_client=web_safari,web_embedded",
           "--format", "bestaudio[protocol*=m3u8]/bestaudio/best",
           probe.originalUrl,
