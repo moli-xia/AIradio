@@ -242,7 +242,9 @@ sudo curl -L --fail https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt
 sudo chmod 0755 /usr/local/bin/yt-dlp
 ```
 
-Docker 镜像构建流程已自动安装 FFmpeg 和 yt-dlp。后台会先尝试直链探测，再使用 yt-dlp 解析播放页面；Bilibili 页面遇到 412 风控时会自动改用公开播放接口。较长媒体可使用“保存节目后台生成”，任务会立即入库并在服务端继续解析、下载和转码，节目状态会由“后台生成中”自动更新为“可播”或“生成失败”。需要登录的页面可以临时填写站点 Cookie，Cookie 不会写入节目或后台配置；DRM 内容仍不受支持。
+Docker 镜像构建流程已自动安装 FFmpeg、带完整依赖的 yt-dlp Linux 可执行文件，并使用镜像内的 Node.js 处理 YouTube JavaScript challenge。后台会先尝试直链探测，再使用 yt-dlp 解析播放页面；Bilibili 页面遇到 412 风控时会自动改用公开播放接口。较长媒体可使用“保存节目后台生成”，任务会立即入库并在服务端继续解析、下载和转码，节目状态会由“后台生成中”自动更新为“可播”或“生成失败”。需要登录的页面可以临时填写站点 Cookie，Cookie 不会写入节目或后台配置；DRM 内容仍不受支持。
+
+YouTube 会频繁轮换仍在浏览器标签页中使用的账号 Cookie。需要登录 Cookie 时，请在只有一个标签页的无痕窗口登录，在同一标签页打开 `https://www.youtube.com/robots.txt`，复制该请求的完整 Request Cookie 后立即关闭整个无痕窗口，再粘贴到节目制作页面。若新 Cookie 在某台 VPS 上仍持续触发人机验证，通常是该 VPS 的数据中心出口 IP 被 YouTube 风控；应用无法仅靠 Cookie 绕过 IP 封锁，需要等待风控解除或更换合规的网络出口。
 
 另开一个进程启动本地 Suno 服务：
 

@@ -9094,14 +9094,14 @@ function AdminStudioPage({
                   <summary>如何获取 YouTube Cookie</summary>
                   <div>
                     <ol>
-                      <li>在电脑浏览器打开 <a href="https://www.youtube.com/" rel="noreferrer" target="_blank">YouTube</a> 并登录你的账号。</li>
-                      <li>按 F12 打开开发者工具，切换到"网络 / Network"标签，然后刷新页面。</li>
-                      <li>在请求列表里找到任意一个发往 <code>youtube.com</code> 的请求（例如 <code>watch?v=...</code>），点击它。</li>
+                      <li>新开一个只有单个标签页的无痕 / 隐私浏览窗口，在 <code>youtube.com</code> 登录账号。</li>
+                      <li>在同一标签页打开 <code>https://www.youtube.com/robots.txt</code>，按 F12 切换到“网络 / Network”并刷新。</li>
+                      <li>点击发往 <code>youtube.com/robots.txt</code> 的请求。</li>
                       <li>在右侧"标头 / Headers" → "请求标头 / Request Headers"中找到 <code>Cookie</code> 这一行。</li>
                       <li>复制 <code>Cookie:</code> 后面的完整值（一长串 <code>名称=值; 名称=值; ...</code>），粘贴到上方输入框。</li>
-                      <li>完成后点"检测链接"验证。如果仍提示格式受限，说明 Cookie 已过期或不完整，重新获取即可。</li>
+                      <li>立即关闭整个无痕窗口，之后不要再打开这个浏览会话，然后点“检测链接”。</li>
                     </ol>
-                    <small>Cookie 必须包含 <code>SID</code>、<code>HSID</code>、<code>SSID</code>、<code>APISID</code>、<code>SAPISID</code> 等登录凭证才能通过 YouTube 人机验证。不要复制"响应标头 / Response Headers"里的 <code>Set-Cookie</code>。Cookie 会过期，通常数天到数周后需重新获取。</small>
+                    <small>YouTube 会轮换仍在浏览器中使用的登录 Cookie，因此从普通窗口或继续打开的 YouTube 标签页复制，即使字段齐全也可能很快失效。不要复制“响应标头 / Response Headers”里的 <code>Set-Cookie</code>。使用账号解析可能触发账号限制，请控制频率并谨慎使用。</small>
                   </div>
                 </details>
                 {mediaProbe ? (
